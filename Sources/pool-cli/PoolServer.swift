@@ -104,14 +104,28 @@ public final class PoolServer: Sendable {
             }
             _poolContinuation = continuation
             #else
-            let src1 = DispatchSource.makeSignalSource(signal: SIGINT)
-            let src2 = DispatchSource.makeSignalSource(signal: SIGTERM)
-            src1.setEventHandler { continuation.resume() }
-            src2.setEventHandler { continuation.resume() }
+            // Use a single serial queue so that concurrent SIGINT+SIGTERM cannot
+            // both pass the optional check and cause a double-resume crash.
+            let signalQueue = DispatchQueue(label: "pool.signal")
+            let src1 = DispatchSource.makeSignalSource(signal: SIGINT, queue: signalQueue)
+            let src2 = DispatchSource.makeSignalSource(signal: SIGTERM, queue: signalQueue)
+            let handler: () -> Void = {
+                _poolContinuation?.resume()
+                _poolContinuation = nil
+                _signalSrc1 = nil
+                _signalSrc2 = nil
+            }
+            src1.setEventHandler(handler: handler)
+            src2.setEventHandler(handler: handler)
             signal(SIGINT, SIG_IGN)
             signal(SIGTERM, SIG_IGN)
             src1.resume()
             src2.resume()
+            // Retain the sources at module level so they are not deallocated
+            // when this closure returns, which would prevent the handlers from firing.
+            _signalSrc1 = src1
+            _signalSrc2 = src2
+            _poolContinuation = continuation
             #endif
         }
     }
@@ -126,3 +140,7 @@ import Musl
 #endif
 
 nonisolated(unsafe) private var _poolContinuation: CheckedContinuation<Void, Never>?
+#if !canImport(Darwin)
+nonisolated(unsafe) private var _signalSrc1: DispatchSourceSignal?
+nonisolated(unsafe) private var _signalSrc2: DispatchSourceSignal?
+#endif

@@ -57,7 +57,7 @@ public final class PoolWorker: @unchecked Sendable {
     public var submittedShares: Set<String> = []
     public let maxSubmittedShares = 10000
 
-    private let writeLock = NSLock()
+    private let writeQueue: WriteQueue
 
     public init(id: UInt64, stream: StreamIO, extraNonce1: UInt32, remoteAddress: String) {
         self.id = id
@@ -66,6 +66,7 @@ public final class PoolWorker: @unchecked Sendable {
         self.remoteAddress = remoteAddress
         self.connectedAt = Date()
         self.lastRetargetTime = Date()
+        self.writeQueue = WriteQueue(stream)
     }
 
     /// Record a share submission timestamp for vardiff calculation.
@@ -153,14 +154,22 @@ public final class PoolWorker: @unchecked Sendable {
 
     private func sendRaw(_ string: String) {
         let bytes = Array(string.utf8)
-        writeLock.lock()
-        defer { writeLock.unlock() }
         Task {
-            try? await stream.write(bytes)
+            await writeQueue.write(bytes)
         }
     }
 
     private func str(_ s: String) -> String { "\"\(s)\"" }
+}
+
+// MARK: - Serialised write queue
+
+/// Actor that serialises all writes to a worker's stream so that concurrent
+/// `sendRaw` calls are always flushed in the order they were enqueued.
+private actor WriteQueue {
+    private let stream: StreamIO
+    init(_ stream: StreamIO) { self.stream = stream }
+    func write(_ bytes: [UInt8]) async { try? await stream.write(bytes) }
 }
 
 // MARK: - Minimal JSON value type for Stratum protocol

@@ -29,6 +29,11 @@ final class StratumClient: @unchecked Sendable {
     private var nextId: Int = 1
     private var readBuffer = [UInt8]()
 
+    // Pending responses from the pool, keyed by request id.
+    // processMessages() buffers them here; submit() waits for its own id.
+    private var pendingResponses: [Int: [String: Any]] = [:]
+    private let responseCondition = NSCondition()
+
     // State from pool
     var extraNonce1: [UInt8] = []
     var extraNonce2Size: Int = 12
@@ -147,6 +152,9 @@ final class StratumClient: @unchecked Sendable {
     }
 
     /// Submit a share to the pool.
+    /// Sends the request and waits for the matching response that
+    /// `processMessages()` will route to us — avoids racing with the
+    /// notification read loop on the same socket.
     func submit(
         jobId: String,
         extraNonce2: [UInt8],
@@ -162,15 +170,28 @@ final class StratumClient: @unchecked Sendable {
 
         send("{\"id\":\(id),\"method\":\"mining.submit\",\"params\":[\"\(username)\",\"\(jobId)\",\"\(en2Hex)\",\"\(timeHex)\",\"\(nonceHex)\",\"\(proofHex)\"]}\n")
 
-        let response = try readResponse()
-        if let result = response["result"] as? Bool {
+        // Wait for processMessages() to read and route our response.
+        let deadline = Date().addingTimeInterval(30)
+        responseCondition.lock()
+        while pendingResponses[id] == nil {
+            if !responseCondition.wait(until: deadline) {
+                responseCondition.unlock()
+                throw MinerError.connectionFailed("submit timeout")
+            }
+        }
+        let response = pendingResponses.removeValue(forKey: id)
+        responseCondition.unlock()
+
+        if let result = response?["result"] as? Bool {
             return result
         }
         return false
     }
 
-    /// Read and process incoming messages (notifications + responses).
-    /// Call this in a loop from the read thread.
+    /// Read and process one incoming message (notification or response).
+    /// Call this in a loop from the main read thread.
+    /// Notifications are dispatched via callbacks; responses are buffered for
+    /// `submit()` to pick up via the response condition.
     func processMessages() throws {
         let line = try readLine()
         guard !line.isEmpty,
@@ -178,8 +199,8 @@ final class StratumClient: @unchecked Sendable {
             return
         }
 
-        // Check if it's a notification (id is null)
         if let method = json["method"] as? String {
+            // Notification
             let params = json["params"] as? [Any] ?? []
             switch method {
             case "mining.notify":
@@ -189,6 +210,14 @@ final class StratumClient: @unchecked Sendable {
             default:
                 break
             }
+        } else {
+            // Response — route to the caller waiting in submit().
+            // Skip messages with no usable integer id (they cannot be matched).
+            guard let msgId = json["id"] as? Int else { return }
+            responseCondition.lock()
+            pendingResponses[msgId] = json
+            responseCondition.broadcast()
+            responseCondition.unlock()
         }
     }
 
