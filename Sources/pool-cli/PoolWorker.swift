@@ -169,6 +169,8 @@ public final class PoolWorker: @unchecked Sendable {
 private actor WriteQueue {
     private let stream: StreamIO
     init(_ stream: StreamIO) { self.stream = stream }
+    // Write errors are silenced here; any failure will also corrupt future reads,
+    // which will surface as a connection error in the worker's read loop.
     func write(_ bytes: [UInt8]) async { try? await stream.write(bytes) }
 }
 
