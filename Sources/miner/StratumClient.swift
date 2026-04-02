@@ -106,7 +106,7 @@ final class StratumClient: @unchecked Sendable {
         nwConnection = nil
         #endif
         if fd >= 0 {
-            Foundation.shutdown(fd, SHUT_RDWR)
+            Foundation.shutdown(fd, Int32(SHUT_RDWR))
             close(fd)
             fd = -1
         }
