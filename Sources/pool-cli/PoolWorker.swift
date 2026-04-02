@@ -1,10 +1,35 @@
 import Base
 import Foundation
 
+/// Abstraction over TCP or TLS connection so the worker doesn't care which.
+public struct StreamIO: Sendable {
+    public let read: @Sendable () async throws -> [UInt8]
+    public let write: @Sendable ([UInt8]) async throws -> Void
+    public let close: @Sendable () async -> Void
+
+    public static func from(_ stream: SocketStream) -> StreamIO {
+        StreamIO(
+            read: { try await stream.read() },
+            write: { try await stream.write($0) },
+            close: { await stream.close() }
+        )
+    }
+
+    #if canImport(Network)
+    public static func from(_ stream: TLSStream) -> StreamIO {
+        StreamIO(
+            read: { try await stream.read() },
+            write: { try await stream.write($0) },
+            close: { await stream.close() }
+        )
+    }
+    #endif
+}
+
 /// A connected Stratum mining worker with pool-level tracking.
 public final class PoolWorker: @unchecked Sendable {
     public let id: UInt64
-    public let stream: SocketStream
+    public let stream: StreamIO
     public let extraNonce1: UInt32
     public let remoteAddress: String
     public let connectedAt: Date
@@ -34,7 +59,7 @@ public final class PoolWorker: @unchecked Sendable {
 
     private let writeLock = NSLock()
 
-    public init(id: UInt64, stream: SocketStream, extraNonce1: UInt32, remoteAddress: String) {
+    public init(id: UInt64, stream: StreamIO, extraNonce1: UInt32, remoteAddress: String) {
         self.id = id
         self.stream = stream
         self.extraNonce1 = extraNonce1

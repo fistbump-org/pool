@@ -28,6 +28,9 @@ struct MinerCLI: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: "Number of mining threads (0 = all cores - 1).")
     var threads: Int?
 
+    @Flag(name: .long, help: "Connect to pool using TLS.")
+    var tls: Bool = false
+
     @Option(name: .long, help: "Log level: trace, debug, info, notice, warning, error, critical.")
     var logLevel: String?
 
@@ -56,16 +59,22 @@ struct MinerCLI: AsyncParsableCommand {
             host: host,
             port: stratumPort,
             username: user,
-            password: password ?? ""
+            password: password ?? "",
+            tls: tls
         )
+
+        var backoff: UInt64 = 2 // seconds
+        let maxBackoff: UInt64 = 120
 
         while !Task.isCancelled {
             do {
                 try await miningSession(client: client, networkType: networkType, logger: logger)
+                backoff = 2 // reset on clean session
             } catch {
-                logger.error("Disconnected: \(error). Reconnecting in 5s...", source: "Miner")
                 client.disconnect()
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                logger.error("Disconnected: \(error). Reconnecting in \(backoff)s...", source: "Miner")
+                try? await Task.sleep(nanoseconds: backoff * 1_000_000_000)
+                backoff = min(backoff * 2, maxBackoff)
             }
         }
     }

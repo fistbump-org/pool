@@ -49,6 +49,14 @@ struct PoolCLI: AsyncParsableCommand {
     @Option(name: .long, help: "HTTP API listen port (0 = stratum+1).")
     var apiPort: Int?
 
+    // MARK: - TLS
+
+    @Option(name: .long, help: "Path to PKCS12 (.p12) identity file for TLS.")
+    var tlsCert: String?
+
+    @Option(name: .long, help: "Password for the PKCS12 file.")
+    var tlsPassword: String?
+
     // MARK: - VarDiff
 
     @Option(name: .long, help: "Target seconds between shares per worker.")
@@ -102,6 +110,8 @@ struct PoolCLI: AsyncParsableCommand {
             poolFee: (fee ?? 1.0) / 100.0,
             vardiffTargetTime: vardiffTarget ?? 10.0,
             vardiffMinDiff: minDiff ?? 1.0,
+            tlsCertPath: tlsCert,
+            tlsCertPassword: tlsPassword,
             walletName: wallet ?? "primary",
             minPayout: Int64((minPayout ?? 10.0) * 1_000_000),
             payoutInterval: payoutInterval ?? 300,

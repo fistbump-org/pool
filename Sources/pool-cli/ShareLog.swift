@@ -173,6 +173,7 @@ public final class ShareLog: @unchecked Sendable {
 
     // MARK: - Persistence
 
+    /// Atomic save: write to .tmp, fsync, rename over the real file.
     private func saveState() {
         guard let path = dataPath else { return }
         let state: [String: Any] = [
@@ -184,14 +185,37 @@ public final class ShareLog: @unchecked Sendable {
                  "time": Int(p.time.timeIntervalSince1970)]
             },
         ]
-        if let data = try? JSONSerialization.data(withJSONObject: state) {
-            try? data.write(to: URL(fileURLWithPath: path))
+        guard let data = try? JSONSerialization.data(withJSONObject: state) else { return }
+
+        let tmpPath = path + ".tmp"
+        let backupPath = path + ".bak"
+        do {
+            try data.write(to: URL(fileURLWithPath: tmpPath), options: .atomic)
+            // Keep one backup of the previous state
+            let fm = FileManager.default
+            if fm.fileExists(atPath: path) {
+                try? fm.removeItem(atPath: backupPath)
+                try? fm.copyItem(atPath: path, toPath: backupPath)
+            }
+            try fm.moveItem(atPath: tmpPath, toPath: path)
+        } catch {
+            // Atomic write failed — leave previous state intact
+            try? FileManager.default.removeItem(atPath: tmpPath)
         }
     }
 
     private func loadState(from path: String) {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        // Try primary, fall back to backup
+        let data: Data
+        if let d = try? Data(contentsOf: URL(fileURLWithPath: path)) {
+            data = d
+        } else if let d = try? Data(contentsOf: URL(fileURLWithPath: path + ".bak")) {
+            data = d
+        } else {
+            return
+        }
+
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return
         }
 

@@ -54,6 +54,14 @@ public struct PoolConfig: Sendable {
     /// Tolerance band — only adjust if share rate deviates by more than this fraction.
     public let vardiffVariance: Double
 
+    // MARK: - TLS
+
+    /// Path to PKCS12 (.p12) identity file for TLS. Nil = plain TCP.
+    public let tlsCertPath: String?
+
+    /// Password for the PKCS12 file.
+    public let tlsCertPassword: String?
+
     // MARK: - Payouts
 
     /// fbd wallet name to send payouts from.
@@ -85,6 +93,8 @@ public struct PoolConfig: Sendable {
         vardiffMaxDiff: Double = 1_000_000_000.0,
         vardiffRetargetTime: Double = 60.0,
         vardiffVariance: Double = 0.1,
+        tlsCertPath: String? = nil,
+        tlsCertPassword: String? = nil,
         walletName: String = "primary",
         minPayout: Int64 = 10_000_000,
         payoutInterval: Double = 300,
@@ -106,6 +116,8 @@ public struct PoolConfig: Sendable {
         self.vardiffMaxDiff = vardiffMaxDiff
         self.vardiffRetargetTime = vardiffRetargetTime
         self.vardiffVariance = vardiffVariance
+        self.tlsCertPath = tlsCertPath
+        self.tlsCertPassword = tlsCertPassword
         self.walletName = walletName
         self.minPayout = minPayout
         self.payoutInterval = payoutInterval

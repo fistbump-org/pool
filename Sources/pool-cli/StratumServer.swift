@@ -18,7 +18,7 @@ public final class StratumServer: @unchecked Sendable {
     private let logger: Logger
 
     private let lock = NSLock()
-    private var listener: TCPListener?
+    private var listenerShutdown: (() -> Void)?
     private var workers: [UInt64: PoolWorker] = [:]
     private var nextWorkerId: UInt64 = 1
     private var nextExtraNonce1: UInt32 = 1
@@ -49,16 +49,37 @@ public final class StratumServer: @unchecked Sendable {
 
     public func start() throws {
         let port = Int(config.effectiveStratumPort)
+
+        #if canImport(Network)
+        if let p12Path = config.tlsCertPath {
+            let tls = try TLSListener(
+                host: config.stratumHost, port: port,
+                p12Path: p12Path, p12Password: config.tlsCertPassword ?? "",
+                logger: logger
+            )
+            self.listenerShutdown = { tls.shutdown() }
+            tls.accept { [self] stream, ip, clientPort in
+                await self.handleConnection(stream: .from(stream), ip: ip, port: clientPort)
+            }
+            logger.info("Stratum (TLS) listening on \(config.stratumHost):\(port)", source: "Stratum")
+            startJobNotifier()
+            return
+        }
+        #endif
+
         let tcp = try TCPListener(host: config.stratumHost, port: port)
-        self.listener = tcp
+        self.listenerShutdown = { tcp.shutdown() }
 
         tcp.accept { [self] stream, ip, clientPort in
-            await self.handleConnection(stream: stream, ip: ip, port: clientPort)
+            await self.handleConnection(stream: .from(stream), ip: ip, port: clientPort)
         }
 
-        // Poll for new block templates
+        startJobNotifier()
+        logger.info("Stratum listening on \(config.stratumHost):\(port)", source: "Stratum")
+    }
+
+    private func startJobNotifier() {
         jobNotifierTask = Task { [self] in
-            // Generate initial job
             do {
                 let job = try await self.generateJob()
                 self.setCurrentJob(job)
@@ -79,15 +100,13 @@ public final class StratumServer: @unchecked Sendable {
                 }
             }
         }
-
-        logger.info("Stratum listening on \(config.stratumHost):\(port)", source: "Stratum")
     }
 
     public func shutdown() {
         jobNotifierTask?.cancel()
         jobNotifierTask = nil
-        listener?.shutdown()
-        listener = nil
+        listenerShutdown?()
+        listenerShutdown = nil
         lock.lock()
         let allWorkers = workers.values
         lock.unlock()
@@ -129,7 +148,7 @@ public final class StratumServer: @unchecked Sendable {
 
     // MARK: - Connection Handling
 
-    private func handleConnection(stream: SocketStream, ip: String, port: Int) async {
+    private func handleConnection(stream: StreamIO, ip: String, port: Int) async {
         let workerId: UInt64
         let extraNonce1: UInt32
         lock.lock()
