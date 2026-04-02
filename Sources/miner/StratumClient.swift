@@ -3,6 +3,18 @@ import Foundation
 #if canImport(Network)
 import Network
 #endif
+#if canImport(Glibc)
+import Glibc
+private let _SOCK_STREAM = Int32(SOCK_STREAM.rawValue)
+private let _IPPROTO_TCP = Int32(IPPROTO_TCP)
+#elseif canImport(Musl)
+import Musl
+private let _SOCK_STREAM = Int32(SOCK_STREAM.rawValue)
+private let _IPPROTO_TCP = Int32(IPPROTO_TCP)
+#else
+private let _SOCK_STREAM = SOCK_STREAM
+private let _IPPROTO_TCP = IPPROTO_TCP
+#endif
 
 /// Stratum v1 client for connecting to a mining pool.
 final class StratumClient: @unchecked Sendable {
@@ -50,7 +62,7 @@ final class StratumClient: @unchecked Sendable {
             return
         }
         #endif
-        let sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        let sock = socket(AF_INET, _SOCK_STREAM, _IPPROTO_TCP)
         guard sock >= 0 else {
             throw MinerError.connectionFailed("socket() failed")
         }
@@ -82,7 +94,7 @@ final class StratumClient: @unchecked Sendable {
         var on: Int32 = 1
         setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &on, socklen_t(MemoryLayout<Int32>.size))
         // TCP nodelay
-        setsockopt(sock, Int32(IPPROTO_TCP), TCP_NODELAY, &on, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(sock, _IPPROTO_TCP, Int32(TCP_NODELAY), &on, socklen_t(MemoryLayout<Int32>.size))
 
         self.fd = sock
         self.readBuffer.removeAll()
