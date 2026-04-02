@@ -57,6 +57,20 @@ struct PoolCLI: AsyncParsableCommand {
     @Option(name: .long, help: "Minimum share difficulty.")
     var minDiff: Double?
 
+    // MARK: - Payouts
+
+    @Option(name: .long, help: "fbd wallet name for payouts (default: primary).")
+    var wallet: String?
+
+    @Option(name: .long, help: "Minimum payout in FBC (default: 10).")
+    var minPayout: Double?
+
+    @Option(name: .long, help: "Payout check interval in seconds (default: 300).")
+    var payoutInterval: Double?
+
+    @Option(name: .long, help: "Data directory for pool state.")
+    var datadir: String?
+
     // MARK: - Logging
 
     @Option(name: .long, help: "Log level: trace, debug, info, notice, warning, error, critical.")
@@ -87,7 +101,11 @@ struct PoolCLI: AsyncParsableCommand {
             apiPort: UInt16(clamping: apiPort ?? 0),
             poolFee: (fee ?? 1.0) / 100.0,
             vardiffTargetTime: vardiffTarget ?? 10.0,
-            vardiffMinDiff: minDiff ?? 1.0
+            vardiffMinDiff: minDiff ?? 1.0,
+            walletName: wallet ?? "primary",
+            minPayout: Int64((minPayout ?? 10.0) * 1_000_000),
+            payoutInterval: payoutInterval ?? 300,
+            dataDir: datadir ?? "~/.fbpool"
         )
 
         var logger = Logger(label: "org.fistbump.pool")

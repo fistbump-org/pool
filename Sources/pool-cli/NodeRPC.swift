@@ -39,6 +39,28 @@ public final class NodeRPC: Sendable {
         return SubmitBlockResult(hash: hash, height: height)
     }
 
+    /// Send a batch payout via wallet RPC.
+    /// Uses `sendmany` with `none` actions: "none addr1 amount1, none addr2 amount2, ..."
+    /// Amounts are in FBC (not bumps). Returns the txid.
+    public func sendPayout(walletName: String, payouts: [(address: String, amountBumps: Int64)]) async throws -> String {
+        // Build the sendmany argument string
+        let segments = payouts.map { (addr, bumps) -> String in
+            let fbc = Double(bumps) / 1_000_000.0
+            return "none \(addr) \(fbc)"
+        }
+        let arg = segments.joined(separator: ", ")
+
+        // sendmany is wallet-scoped: params are [walletName, "none addr amt, none addr amt, ..."]
+        let result = try await call(method: "sendmany", params: [walletName, arg])
+        guard let dict = result as? [String: Any],
+              let txid = dict["txid"] as? String else {
+            // Some wallets return just the txid as a string
+            if let txid = result as? String { return txid }
+            throw PoolError.rpcError("unexpected sendmany response")
+        }
+        return txid
+    }
+
     /// Get basic blockchain info.
     public func getBlockchainInfo() async throws -> [String: Any] {
         let result = try await call(method: "getblockchaininfo", params: [])

@@ -11,6 +11,8 @@ public final class PoolWorker: @unchecked Sendable {
 
     // Auth
     public var username: String?
+    public var payoutAddress: String?
+    public var workerName: String?
     public var isSubscribed = false
     public var isAuthorized = false
 

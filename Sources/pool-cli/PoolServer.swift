@@ -2,7 +2,7 @@ import Base
 import Foundation
 import Logging
 
-/// Main pool orchestrator — wires together Stratum server, share log, and API.
+/// Main pool orchestrator — wires together Stratum server, share log, payouts, and API.
 public final class PoolServer: Sendable {
     public let config: PoolConfig
     public let logger: Logger
@@ -19,7 +19,14 @@ public final class PoolServer: Sendable {
             "address": "\(config.poolAddress)",
             "stratum": "\(config.stratumHost):\(config.effectiveStratumPort)",
             "fee": "\(config.poolFee * 100)%",
+            "min_payout": "\(Double(config.minPayout) / 1_000_000.0) FBC",
+            "wallet": "\(config.walletName)",
         ], source: "Pool")
+
+        // Create data directory
+        let dataDir = NSString(string: config.dataDir).expandingTildeInPath
+        try FileManager.default.createDirectory(atPath: dataDir, withIntermediateDirectories: true)
+        let statePath = dataDir + "/pool-state.json"
 
         let rpc = NodeRPC(url: config.nodeURL, apiKey: config.nodeAPIKey)
 
@@ -37,7 +44,8 @@ public final class PoolServer: Sendable {
 
         let shareLog = ShareLog(
             poolFee: config.poolFee,
-            windowMultiple: config.pplnsWindowMultiple
+            windowMultiple: config.pplnsWindowMultiple,
+            dataPath: statePath
         )
 
         let stratum = StratumServer(
@@ -47,9 +55,16 @@ public final class PoolServer: Sendable {
             logger: logger
         )
 
-        stratum.onBlockFound = { [logger] height, hash in
-            logger.info("Block \(height) found: \(hash)", source: "Pool")
-        }
+        // Start payout manager
+        let payoutManager = PayoutManager(
+            rpc: rpc,
+            shareLog: shareLog,
+            walletName: config.walletName,
+            minPayout: config.minPayout,
+            interval: config.payoutInterval,
+            logger: logger
+        )
+        payoutManager.start()
 
         // Start Stratum
         try stratum.start()
@@ -68,6 +83,15 @@ public final class PoolServer: Sendable {
         }
 
         // Wait for cancellation (SIGINT/SIGTERM)
+        await withCheckedSignal()
+
+        logger.info("Shutting down...", source: "Pool")
+        payoutManager.stop()
+        api?.shutdown()
+        stratum.shutdown()
+    }
+
+    private func withCheckedSignal() async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             #if canImport(Darwin)
             signal(SIGINT) { _ in
@@ -90,10 +114,6 @@ public final class PoolServer: Sendable {
             src2.resume()
             #endif
         }
-
-        logger.info("Shutting down...", source: "Pool")
-        api?.shutdown()
-        stratum.shutdown()
     }
 }
 

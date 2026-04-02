@@ -112,6 +112,8 @@ public final class StratumServer: @unchecked Sendable {
             WorkerSnapshot(
                 id: w.id,
                 username: w.username ?? "unknown",
+                payoutAddress: w.payoutAddress ?? "unknown",
+                workerName: w.workerName,
                 remoteAddress: w.remoteAddress,
                 difficulty: w.difficulty,
                 accepted: w.accepted,
@@ -260,13 +262,26 @@ public final class StratumServer: @unchecked Sendable {
             }
         }
 
+        // Parse username as "address.workername" or just "address"
+        let (address, workerName) = parseUsername(username)
+
+        // Validate payout address
+        let hrp = config.network.addressHRP
+        guard address.hasPrefix(hrp + "1") else {
+            worker.sendResponse(id: id, result: nil, error: .string("invalid address: must start with \(hrp)1"))
+            return
+        }
+
         worker.username = username
+        worker.payoutAddress = address
+        worker.workerName = workerName
         worker.isAuthorized = true
         worker.sendResponse(id: id, result: .bool(true))
 
         logger.info("Miner authorized", metadata: [
             "worker": "\(worker.id)",
-            "username": "\(username)",
+            "address": "\(address)",
+            "rig": "\(workerName ?? "default")",
         ], source: "Stratum")
 
         // Send current job
@@ -380,8 +395,8 @@ public final class StratumServer: @unchecked Sendable {
         worker.recordShareTime()
         worker.sendResponse(id: id, result: .bool(true))
 
-        // Record share in PPLNS
-        shareLog.addShare(worker: worker.username ?? "unknown", difficulty: worker.difficulty)
+        // Record share in PPLNS (keyed by payout address)
+        shareLog.addShare(address: worker.payoutAddress ?? "unknown", difficulty: worker.difficulty)
 
         // Check if share also meets network target → block!
         let networkTarget = Target256.fromCompact(job.bits)
@@ -491,7 +506,9 @@ public final class StratumServer: @unchecked Sendable {
                     "height": "\(result.height)",
                 ], source: "Pool")
 
-                shareLog.recordBlock(height: result.height, hash: result.hash)
+                // Calculate block reward from coinbase outputs
+                let reward = Int64(coinbase.outputs.reduce(UInt64(0)) { $0 + $1.value })
+                shareLog.recordBlock(height: result.height, hash: result.hash, blockReward: reward)
                 onBlockFound?(result.height, result.hash)
             } catch {
                 logger.error("Failed to submit block: \(error)", source: "Pool")
@@ -544,11 +561,30 @@ public final class StratumServer: @unchecked Sendable {
     }
 }
 
+// MARK: - Username Parsing
+
+/// Parse a Stratum username as "address.workername" or just "address".
+func parseUsername(_ username: String) -> (address: String, workerName: String?) {
+    guard let dotIdx = username.lastIndex(of: ".") else {
+        return (username, nil)
+    }
+    let address = String(username[..<dotIdx])
+    let worker = String(username[username.index(after: dotIdx)...])
+    // Only split if the part before the dot looks like an address (has "1" in it,
+    // meaning it's bech32). Otherwise treat the whole thing as the address.
+    if address.contains("1") && !worker.isEmpty {
+        return (address, worker)
+    }
+    return (username, nil)
+}
+
 // MARK: - Worker Snapshot
 
 public struct WorkerSnapshot: Sendable {
     public let id: UInt64
     public let username: String
+    public let payoutAddress: String
+    public let workerName: String?
     public let remoteAddress: String
     public let difficulty: Double
     public let accepted: Int

@@ -1,9 +1,10 @@
 import Foundation
 
-/// PPLNS share accounting and block tracking.
+/// PPLNS share accounting, balance tracking, and payout management.
 ///
 /// Maintains a sliding window of recent shares. When a block is found,
-/// the reward is attributed proportionally to shares in the window.
+/// the reward is attributed proportionally to shares in the window and
+/// credited to each miner's balance. Balances persist to disk.
 public final class ShareLog: @unchecked Sendable {
     private let lock = NSLock()
 
@@ -11,7 +12,6 @@ public final class ShareLog: @unchecked Sendable {
     private let poolFee: Double
 
     /// PPLNS window size in total difficulty-weighted shares.
-    /// Roughly: expected shares per block * windowMultiple.
     private var windowSize: Double
 
     /// Ring of recent shares.
@@ -20,36 +20,46 @@ public final class ShareLog: @unchecked Sendable {
     /// Blocks found by the pool.
     private var blocks: [FoundBlock] = []
 
-    /// Accumulated payouts per username.
+    /// Accumulated unpaid balances per payout address (in bumps).
     private var balances: [String: Int64] = [:]
 
-    public init(poolFee: Double, windowMultiple: Double) {
+    /// Total paid out per address (in bumps).
+    private var totalPaid: [String: Int64] = [:]
+
+    /// Payout history.
+    private var payouts: [PayoutRecord] = []
+
+    /// Path to persist balances.
+    private let dataPath: String?
+
+    public init(poolFee: Double, windowMultiple: Double, dataPath: String? = nil) {
         self.poolFee = poolFee
-        // Initial window size — recalculated when we know the network difficulty.
         self.windowSize = 1000.0 * windowMultiple
+        self.dataPath = dataPath
+        if let path = dataPath {
+            loadState(from: path)
+        }
     }
 
     /// Update the PPLNS window size based on current network difficulty.
-    /// Called when a new job arrives so the window tracks the expected shares per block.
     public func updateWindowSize(networkDifficulty: Double, windowMultiple: Double) {
         lock.lock()
         defer { lock.unlock() }
-        // Expected difficulty-weighted shares per block ≈ networkDifficulty
-        // (since each share contributes its own difficulty to the total).
         windowSize = networkDifficulty * windowMultiple
     }
 
-    /// Record a share from a worker.
-    public func addShare(worker: String, difficulty: Double) {
-        let share = Share(worker: worker, difficulty: difficulty, time: Date())
+    /// Record a share from a miner (keyed by payout address).
+    public func addShare(address: String, difficulty: Double) {
+        let share = Share(address: address, difficulty: difficulty, time: Date())
         lock.lock()
         shares.append(share)
         trimWindow()
         lock.unlock()
     }
 
-    /// Record a found block and calculate PPLNS payouts.
-    public func recordBlock(height: Int, hash: String) {
+    /// Record a found block: calculate PPLNS payouts and credit balances.
+    /// `blockReward` is in bumps (1 FBC = 1,000,000 bumps).
+    public func recordBlock(height: Int, hash: String, blockReward: Int64) {
         lock.lock()
         defer { lock.unlock() }
 
@@ -58,75 +68,101 @@ public final class ShareLog: @unchecked Sendable {
             hash: hash,
             time: Date(),
             totalShares: shares.count,
-            totalDifficulty: shares.reduce(0) { $0 + $1.difficulty }
+            totalDifficulty: shares.reduce(0) { $0 + $1.difficulty },
+            reward: blockReward
         )
         blocks.append(block)
-
-        // Keep last 1000 blocks
         if blocks.count > 1000 {
             blocks.removeFirst(blocks.count - 1000)
         }
-    }
 
-    /// Calculate PPLNS payouts for a block reward.
-    /// Returns (worker -> payout amount) after deducting pool fee.
-    public func calculatePayouts(blockReward: Int64) -> [String: Int64] {
-        lock.lock()
-        let currentShares = shares
-        lock.unlock()
-
-        guard !currentShares.isEmpty else { return [:] }
-
+        // PPLNS payout calculation
+        guard !shares.isEmpty else { return }
         let netReward = Int64(Double(blockReward) * (1.0 - poolFee))
+        let totalDiff = shares.reduce(0.0) { $0 + $1.difficulty }
+        guard totalDiff > 0 else { return }
 
-        // Sum difficulty-weighted shares in the window
-        let totalDiff = currentShares.reduce(0.0) { $0 + $1.difficulty }
-        guard totalDiff > 0 else { return [:] }
-
-        var payouts: [String: Int64] = [:]
-        for share in currentShares {
+        for share in shares {
             let fraction = share.difficulty / totalDiff
             let amount = Int64(Double(netReward) * fraction)
-            payouts[share.worker, default: 0] += amount
+            if amount > 0 {
+                balances[share.address, default: 0] += amount
+            }
         }
 
-        return payouts
+        saveState()
     }
 
-    /// Get current share window stats.
+    /// Record a completed payout.
+    public func recordPayout(address: String, amount: Int64, txid: String) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        balances[address, default: 0] -= amount
+        if balances[address, default: 0] <= 0 {
+            balances.removeValue(forKey: address)
+        }
+
+        totalPaid[address, default: 0] += amount
+
+        payouts.append(PayoutRecord(
+            address: address,
+            amount: amount,
+            txid: txid,
+            time: Date()
+        ))
+        if payouts.count > 10000 {
+            payouts.removeFirst(payouts.count - 10000)
+        }
+
+        saveState()
+    }
+
+    /// Get addresses with balances above the given threshold (in bumps).
+    public func pendingPayouts(minBalance: Int64) -> [String: Int64] {
+        lock.lock()
+        defer { lock.unlock() }
+        return balances.filter { $0.value >= minBalance }
+    }
+
+    // MARK: - Stats
+
     public var stats: ShareStats {
         lock.lock()
         defer { lock.unlock() }
         let totalDiff = shares.reduce(0.0) { $0 + $1.difficulty }
-        var workerShares: [String: Int] = [:]
+        var addressShares: [String: Int] = [:]
         for share in shares {
-            workerShares[share.worker, default: 0] += 1
+            addressShares[share.address, default: 0] += 1
         }
         return ShareStats(
             windowShares: shares.count,
             windowDifficulty: totalDiff,
             windowSize: windowSize,
-            workerShareCounts: workerShares
+            addressShareCounts: addressShares
         )
     }
 
-    /// Get blocks found by the pool.
     public var foundBlocks: [FoundBlock] {
         lock.lock()
         defer { lock.unlock() }
         return blocks
     }
 
-    /// Get accumulated balances.
-    public var workerBalances: [String: Int64] {
+    public var minerBalances: [String: Int64] {
         lock.lock()
         defer { lock.unlock() }
         return balances
     }
 
+    public var recentPayouts: [PayoutRecord] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(payouts.suffix(100))
+    }
+
     // MARK: - Private
 
-    /// Trim the share window to maintain PPLNS size. Caller must hold lock.
     private func trimWindow() {
         var totalDiff = shares.reduce(0.0) { $0 + $1.difficulty }
         while totalDiff > windowSize && shares.count > 1 {
@@ -134,12 +170,60 @@ public final class ShareLog: @unchecked Sendable {
             shares.removeFirst()
         }
     }
+
+    // MARK: - Persistence
+
+    private func saveState() {
+        guard let path = dataPath else { return }
+        let state: [String: Any] = [
+            "balances": balances.mapValues { NSNumber(value: $0) },
+            "total_paid": totalPaid.mapValues { NSNumber(value: $0) },
+            "blocks_found": blocks.count,
+            "payouts": payouts.suffix(1000).map { p -> [String: Any] in
+                ["address": p.address, "amount": p.amount, "txid": p.txid,
+                 "time": Int(p.time.timeIntervalSince1970)]
+            },
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: state) {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+    }
+
+    private func loadState(from path: String) {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return
+        }
+
+        if let bals = json["balances"] as? [String: NSNumber] {
+            for (addr, amount) in bals {
+                balances[addr] = amount.int64Value
+            }
+        }
+        if let paid = json["total_paid"] as? [String: NSNumber] {
+            for (addr, amount) in paid {
+                totalPaid[addr] = amount.int64Value
+            }
+        }
+        if let payoutList = json["payouts"] as? [[String: Any]] {
+            for p in payoutList {
+                guard let addr = p["address"] as? String,
+                      let amount = (p["amount"] as? NSNumber)?.int64Value,
+                      let txid = p["txid"] as? String,
+                      let time = p["time"] as? Int else { continue }
+                payouts.append(PayoutRecord(
+                    address: addr, amount: amount, txid: txid,
+                    time: Date(timeIntervalSince1970: Double(time))
+                ))
+            }
+        }
+    }
 }
 
 // MARK: - Types
 
 struct Share {
-    let worker: String
+    let address: String
     let difficulty: Double
     let time: Date
 }
@@ -148,7 +232,7 @@ public struct ShareStats: Sendable {
     public let windowShares: Int
     public let windowDifficulty: Double
     public let windowSize: Double
-    public let workerShareCounts: [String: Int]
+    public let addressShareCounts: [String: Int]
 }
 
 public struct FoundBlock: Sendable {
@@ -157,4 +241,12 @@ public struct FoundBlock: Sendable {
     public let time: Date
     public let totalShares: Int
     public let totalDifficulty: Double
+    public let reward: Int64
+}
+
+public struct PayoutRecord: Sendable {
+    public let address: String
+    public let amount: Int64
+    public let txid: String
+    public let time: Date
 }

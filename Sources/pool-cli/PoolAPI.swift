@@ -69,6 +69,10 @@ public final class PoolAPI: @unchecked Sendable {
             return (200, workersJSON())
         case "/api/blocks":
             return (200, blocksJSON())
+        case "/api/balances":
+            return (200, balancesJSON())
+        case "/api/payouts":
+            return (200, payoutsJSON())
         default:
             return (404, "{\"error\":\"not found\"}")
         }
@@ -115,7 +119,24 @@ public final class PoolAPI: @unchecked Sendable {
             "{\"height\":\(b.height)," +
             "\"hash\":\"\(b.hash)\"," +
             "\"time\":\(Int(b.time.timeIntervalSince1970))," +
+            "\"reward\":\(b.reward)," +
             "\"shares\":\(b.totalShares)}"
+        }
+        return "[\(entries.joined(separator: ","))]"
+    }
+
+    private func balancesJSON() -> String {
+        let bals = shareLog.minerBalances
+        let entries = bals.map { (addr, bumps) in
+            "{\"address\":\"\(addr)\",\"balance\":\(bumps),\"fbc\":\(String(format: "%.6f", Double(bumps) / 1_000_000.0))}"
+        }
+        return "[\(entries.joined(separator: ","))]"
+    }
+
+    private func payoutsJSON() -> String {
+        let payouts = shareLog.recentPayouts
+        let entries = payouts.map { p in
+            "{\"address\":\"\(p.address)\",\"amount\":\(p.amount),\"txid\":\"\(p.txid)\",\"time\":\(Int(p.time.timeIntervalSince1970))}"
         }
         return "[\(entries.joined(separator: ","))]"
     }

@@ -54,6 +54,20 @@ public struct PoolConfig: Sendable {
     /// Tolerance band — only adjust if share rate deviates by more than this fraction.
     public let vardiffVariance: Double
 
+    // MARK: - Payouts
+
+    /// fbd wallet name to send payouts from.
+    public let walletName: String
+
+    /// Minimum balance before a payout is triggered (in bumps).
+    public let minPayout: Int64
+
+    /// How often to check for pending payouts (seconds).
+    public let payoutInterval: Double
+
+    /// Data directory for persistent state (balances, payout history).
+    public let dataDir: String
+
     public init(
         network: NetworkType = .main,
         nodeURL: String = "http://127.0.0.1:32869",
@@ -70,7 +84,11 @@ public struct PoolConfig: Sendable {
         vardiffMinDiff: Double = 1.0,
         vardiffMaxDiff: Double = 1_000_000_000.0,
         vardiffRetargetTime: Double = 60.0,
-        vardiffVariance: Double = 0.1
+        vardiffVariance: Double = 0.1,
+        walletName: String = "primary",
+        minPayout: Int64 = 10_000_000,
+        payoutInterval: Double = 300,
+        dataDir: String = "~/.fbpool"
     ) {
         self.network = network
         self.nodeURL = nodeURL
@@ -88,6 +106,10 @@ public struct PoolConfig: Sendable {
         self.vardiffMaxDiff = vardiffMaxDiff
         self.vardiffRetargetTime = vardiffRetargetTime
         self.vardiffVariance = vardiffVariance
+        self.walletName = walletName
+        self.minPayout = minPayout
+        self.payoutInterval = payoutInterval
+        self.dataDir = dataDir
     }
 
     /// The effective Stratum port (config value or network default).
