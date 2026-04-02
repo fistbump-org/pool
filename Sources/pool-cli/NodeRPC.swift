@@ -1,5 +1,8 @@
 import Base
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// JSON-RPC client for communicating with a fbd node.
 ///
