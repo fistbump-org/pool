@@ -27,5 +27,18 @@ let package = Package(
             ],
             path: "Sources/pool-cli"
         ),
+
+        .executableTarget(
+            name: "miner",
+            dependencies: [
+                .product(name: "Base", package: "fbd"),
+                .product(name: "ExtCrypto", package: "fbd"),
+                .product(name: "Protocol", package: "fbd"),
+                .product(name: "Consensus", package: "fbd"),
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            path: "Sources/miner"
+        ),
     ]
 )
