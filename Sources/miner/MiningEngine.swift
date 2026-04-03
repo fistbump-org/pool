@@ -30,9 +30,6 @@ final class MiningEngine: @unchecked Sendable {
     /// Buffer pool — survives across job changes so threads reuse 512 MB allocations.
     private let bufferPool: BufferPool
 
-    /// Background queue for proof generation + share submission.
-    private let shareQueue = DispatchQueue(label: "org.fistbump.miner.shares", qos: .userInitiated)
-
     /// Prepared job data that threads pick up between hash iterations.
     /// Protected by `lock`. Updated on non-clean jobs without restarting threads.
     private var preparedJob: PreparedJob?
@@ -143,7 +140,6 @@ final class MiningEngine: @unchecked Sendable {
 
         for tid in 0..<threadCount {
             let bufferPool = self.bufferPool
-            let shareQueue = self.shareQueue
 
             Thread.detachNewThread { [weak self] in
                 let buffer = bufferPool.checkout()
@@ -221,57 +217,54 @@ final class MiningEngine: @unchecked Sendable {
                     if hashTarget <= curShareTarget {
                         let isBlock = hashTarget <= curNetworkTarget
                         let capturedNonce = nonce
-                        let capturedEN2 = extraNonce2
-                        let capturedJob = curJob
-                        let capturedExtraNonce = curExtraNonce
+                        // Generate proof and submit synchronously on this mining thread.
+                        // This blocks ~10s but only happens when a share is found.
+                        // Must be synchronous — StratumClient is not thread-safe.
+                        let header = BlockHeader(
+                            nonce: capturedNonce,
+                            time: curJob.job.time,
+                            prevBlock: curJob.prevBlock,
+                            treeRoot: curJob.treeRoot,
+                            extraNonce: curExtraNonce,
+                            reservedRoot: curJob.reservedRoot,
+                            witnessRoot: curJob.witnessRoot,
+                            merkleRoot: curJob.merkleRoot,
+                            version: curJob.job.version,
+                            bits: curJob.job.bits
+                        )
 
-                        shareQueue.async { [weak self] in
-                            let header = BlockHeader(
+                        do {
+                            let (_, proof) = try ProofOfWork.powHashWithProof(
+                                for: header, params: params
+                            )
+                            let proofBytes = proof.serialize()
+
+                            let accepted = try client.submit(
+                                jobId: curJob.job.id,
+                                extraNonce2: extraNonce2,
+                                nTime: curJob.job.time,
                                 nonce: capturedNonce,
-                                time: capturedJob.job.time,
-                                prevBlock: capturedJob.prevBlock,
-                                treeRoot: capturedJob.treeRoot,
-                                extraNonce: capturedExtraNonce,
-                                reservedRoot: capturedJob.reservedRoot,
-                                witnessRoot: capturedJob.witnessRoot,
-                                merkleRoot: capturedJob.merkleRoot,
-                                version: capturedJob.job.version,
-                                bits: capturedJob.job.bits
+                                proof: proofBytes
                             )
 
-                            do {
-                                let (_, proof) = try ProofOfWork.powHashWithProof(
-                                    for: header, params: params
-                                )
-                                let proofBytes = proof.serialize()
-
-                                let accepted = try client.submit(
-                                    jobId: capturedJob.job.id,
-                                    extraNonce2: capturedEN2,
-                                    nTime: capturedJob.job.time,
-                                    nonce: capturedNonce,
-                                    proof: proofBytes
-                                )
-
-                                if accepted {
-                                    self?.recordAccepted()
-                                    if isBlock {
-                                        self?.recordBlock()
-                                        logger.info("Block found! nonce=\(capturedNonce)", source: "Miner")
-                                    } else {
-                                        logger.info("Share accepted", metadata: [
-                                            "nonce": "\(capturedNonce)",
-                                            "thread": "\(tid)",
-                                        ], source: "Miner")
-                                    }
+                            if accepted {
+                                self?.recordAccepted()
+                                if isBlock {
+                                    self?.recordBlock()
+                                    logger.info("Block found! nonce=\(capturedNonce)", source: "Miner")
                                 } else {
-                                    self?.recordRejected()
-                                    let reason = client.rejectReason ?? "unknown"
-                                    logger.warning("Share rejected: \(reason)", source: "Miner")
+                                    logger.info("Share accepted", metadata: [
+                                        "nonce": "\(capturedNonce)",
+                                        "thread": "\(tid)",
+                                    ], source: "Miner")
                                 }
-                            } catch {
-                                logger.error("Submit error: \(error)", source: "Miner")
+                            } else {
+                                self?.recordRejected()
+                                let reason = client.rejectReason ?? "unknown"
+                                logger.warning("Share rejected: \(reason)", source: "Miner")
                             }
+                        } catch {
+                            logger.error("Submit error: \(error)", source: "Miner")
                         }
                     }
 
