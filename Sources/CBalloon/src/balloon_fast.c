@@ -5,11 +5,11 @@
 // Platform detection
 // ---------------------------------------------------------------------------
 
-#if defined(__x86_64__) || defined(_M_X64)
-  #if defined(__SSSE3__)
+// SSSE3 BLAKE2b disabled pending validation against test vectors.
+// The scalar C path with -O3 -march=native is used instead.
+#if 0 && defined(__x86_64__) && defined(__SSSE3__)
     #include <tmmintrin.h>
     #define BLAKE2B_SSSE3 1
-  #endif
 #elif defined(__aarch64__) || defined(_M_ARM64)
   #include <arm_neon.h>
   #define BLAKE2B_NEON 1

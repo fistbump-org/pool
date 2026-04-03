@@ -1,3 +1,3 @@
 enum MinerVersion {
-    static let id = "rot-fix"
+    static let id = "scalar-c"
 }
