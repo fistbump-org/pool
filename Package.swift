@@ -8,7 +8,7 @@ let package = Package(
         .macOS(.v13),
     ],
     dependencies: [
-        .package(path: "https://github.com/fistbump-rg/fbd.git"),
+        .package(path: "https://github.com/fistbump-org/fbd.git"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
     ],
