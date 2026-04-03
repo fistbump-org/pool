@@ -47,7 +47,7 @@ struct MinerCLI: AsyncParsableCommand {
         let networkType = NetworkType(rawValue: network ?? "main") ?? .main
         let stratumPort = port ?? Int(networkType.stratumPort)
 
-        logger.info("Fistbump CPU Miner", metadata: [
+        logger.info("Fistbump CPU Miner v\(MinerVersion.id)", metadata: [
             "pool": "\(host):\(stratumPort)",
             "user": "\(user)",
             "network": "\(networkType.rawValue)",
