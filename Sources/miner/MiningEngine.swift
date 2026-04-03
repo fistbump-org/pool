@@ -186,9 +186,11 @@ final class MiningEngine: @unchecked Sendable {
                         curPassword = curJob.password
                         curShareTarget = curJob.shareTarget
                         curNetworkTarget = curJob.networkTarget
-                        // Reset nonce for new job
                         nonce = UInt32(tid)
                     }
+
+                    // Set cancellation flag so the C code can check it mid-hash
+                    buffer.cancelled = result.shouldStop ? 1 : 0
 
                     // Update nonce in salt (first 4 bytes, little-endian)
                     salt[0] = UInt8(truncatingIfNeeded: nonce)

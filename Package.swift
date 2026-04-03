@@ -13,6 +13,18 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
     ],
     targets: [
+        .target(
+            name: "CBalloon",
+            dependencies: [],
+            path: "Sources/CBalloon",
+            sources: ["src"],
+            publicHeadersPath: "include",
+            cSettings: [
+                .unsafeFlags(["-O3", "-march=native"], .when(platforms: [.linux])),
+                .unsafeFlags(["-O3"], .when(platforms: [.macOS])),
+            ]
+        ),
+
         .executableTarget(
             name: "pool",
             dependencies: [
@@ -31,6 +43,7 @@ let package = Package(
         .executableTarget(
             name: "miner",
             dependencies: [
+                "CBalloon",
                 .product(name: "Base", package: "fbd"),
                 .product(name: "ExtCrypto", package: "fbd"),
                 .product(name: "Protocol", package: "fbd"),
