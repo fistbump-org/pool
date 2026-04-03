@@ -101,7 +101,9 @@ struct MinerCLI: AsyncParsableCommand {
         // When we get a new job, start mining it
         client.onNewJob = { [engine, logger] job, clean in
             logger.info("New job: \(job.id) (clean=\(clean))", source: "Miner")
-            engine.mine(job: job)
+            if clean {
+                engine.mine(job: job)
+            }
         }
 
         client.onNewDifficulty = { [logger] diff in

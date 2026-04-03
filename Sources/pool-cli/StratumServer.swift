@@ -31,7 +31,7 @@ public final class StratumServer: @unchecked Sendable {
     private let params: ConsensusParams
 
     /// Maximum recent jobs for stale share tolerance.
-    private let maxRecentJobs = 4
+    private let maxRecentJobs = 32
 
     /// Callback when a block is found (for stats).
     public var onBlockFound: (@Sendable (Int, String) -> Void)?
@@ -88,13 +88,21 @@ public final class StratumServer: @unchecked Sendable {
             }
 
             var lastPrevHash = ""
+            var lastRefresh = Date()
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                try? await Task.sleep(nanoseconds: 1_000_000_000) // poll every 1s for new blocks
                 do {
                     let job = try await self.generateJob()
                     let isNewBlock = job.prevBlockHash != lastPrevHash
-                    lastPrevHash = job.prevBlockHash
-                    self.broadcastJob(job, clean: isNewBlock)
+                    if isNewBlock {
+                        lastPrevHash = job.prevBlockHash
+                        lastRefresh = Date()
+                        self.broadcastJob(job, clean: true)
+                    } else if Date().timeIntervalSince(lastRefresh) >= 30 {
+                        // Periodic refresh for mempool changes — throttled for BalloonHash
+                        lastRefresh = Date()
+                        self.broadcastJob(job, clean: false)
+                    }
                 } catch {
                     self.logger.error("Failed to generate job: \(error)", source: "Stratum")
                 }
