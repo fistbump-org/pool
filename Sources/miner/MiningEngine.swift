@@ -115,6 +115,7 @@ final class MiningEngine: @unchecked Sendable {
                         return
                     }
                     hashes += 1
+                    self?.addHashes(1)
 
                     let hashTarget = Target256(bigEndian: hash.bytes)
 
@@ -161,7 +162,7 @@ final class MiningEngine: @unchecked Sendable {
                     nonce = next
                 }
 
-                self?.addHashes(hashes)
+                // totalHashes already updated per-hash above
             }
         }
     }
