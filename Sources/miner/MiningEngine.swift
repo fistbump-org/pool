@@ -135,9 +135,9 @@ final class MiningEngine: @unchecked Sendable {
         let rounds = params.balloonRounds
         let delta = params.balloonDelta
 
-        logger.debug("Mining job \(job.id) (clean restart)", metadata: [
-            "height_bits": "\(String(format: "0x%08x", job.bits))",
-            "difficulty": "\(String(format: "%.2f", client.difficulty))",
+        logger.info("Mining job \(job.id) (clean restart)", metadata: [
+            "bits": "\(String(format: "0x%08x", job.bits))",
+            "share_diff": "\(String(format: "%.4f", difficulty))",
             "threads": "\(threadCount)",
         ], source: "Miner")
 
