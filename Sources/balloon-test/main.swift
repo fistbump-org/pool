@@ -107,7 +107,7 @@ func testBalloonPrefetch() -> Bool {
     let password: [UInt8] = Array(0..<32)
     let salt: [UInt8] = Array(100..<128)
 
-    for slots in [16, 64, 256] {
+    for slots in [16, 64, 256, 4096, 65536] {
         let swiftResult = try! BalloonHash.hash(
             password: password, salt: salt,
             slots: slots, rounds: 1, delta: 1

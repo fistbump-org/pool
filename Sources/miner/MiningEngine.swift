@@ -216,6 +216,14 @@ final class MiningEngine: @unchecked Sendable {
                     }
                     self?.addHashes(1)
 
+                    // Debug: log first hash per thread to diagnose share target issues
+                    if nonce == UInt32(tid) {
+                        let hexHash = hashBytes.prefix(8).map { String(format: "%02x", $0) }.joined()
+                        let targetBytes = curShareTarget.bigEndianBytes()
+                        let hexTarget = targetBytes.prefix(8).map { String(format: "%02x", $0) }.joined()
+                        logger.info("Thread \(tid) first hash: \(hexHash)... target: \(hexTarget)...", source: "Debug")
+                    }
+
                     let hashTarget = Target256(bigEndian: hashBytes)
 
                     if hashTarget <= curShareTarget {
