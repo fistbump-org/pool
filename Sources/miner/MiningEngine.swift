@@ -216,12 +216,21 @@ final class MiningEngine: @unchecked Sendable {
                     }
                     self?.addHashes(1)
 
-                    // Debug: log first hash per thread to diagnose share target issues
-                    if nonce == UInt32(tid) {
-                        let hexHash = hashBytes.prefix(8).map { String(format: "%02x", $0) }.joined()
-                        let targetBytes = curShareTarget.bigEndianBytes()
-                        let hexTarget = targetBytes.prefix(8).map { String(format: "%02x", $0) }.joined()
-                        logger.info("Thread \(tid) first hash: \(hexHash)... target: \(hexTarget)...", source: "Debug")
+                    // Debug: on the very first hash of thread 0, verify C matches Swift
+                    if tid == 0 && nonce == 0 {
+                        let header = BlockHeader(
+                            nonce: 0, time: curJob.job.time,
+                            prevBlock: curJob.prevBlock, treeRoot: curJob.treeRoot,
+                            extraNonce: curExtraNonce, reservedRoot: curJob.reservedRoot,
+                            witnessRoot: curJob.witnessRoot, merkleRoot: curJob.merkleRoot,
+                            version: curJob.job.version, bits: curJob.job.bits
+                        )
+                        if let swiftHash = try? ProofOfWork.powHash(for: header, params: params) {
+                            let cHex = hashBytes.prefix(8).map { String(format: "%02x", $0) }.joined()
+                            let sHex = swiftHash.bytes.prefix(8).map { String(format: "%02x", $0) }.joined()
+                            let match = hashBytes == swiftHash.bytes
+                            logger.info("C vs Swift: c=\(cHex) swift=\(sHex) match=\(match)", source: "Debug")
+                        }
                     }
 
                     let hashTarget = Target256(bigEndian: hashBytes)
