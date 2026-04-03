@@ -37,8 +37,12 @@ final class BufferPool: @unchecked Sendable {
     private var available: [MiningBuffer] = []
     private let lock = NSLock()
     private let slots: Int
+    private let maxPooled: Int
 
-    init(slots: Int) { self.slots = slots }
+    init(slots: Int, maxPooled: Int = 0) {
+        self.slots = slots
+        self.maxPooled = maxPooled > 0 ? maxPooled : 32
+    }
 
     func checkout() -> MiningBuffer {
         lock.lock()
@@ -53,8 +57,13 @@ final class BufferPool: @unchecked Sendable {
 
     func checkin(_ buf: MiningBuffer) {
         lock.lock()
-        available.append(buf)
-        lock.unlock()
+        if available.count < maxPooled {
+            available.append(buf)
+            lock.unlock()
+        } else {
+            lock.unlock()
+            // Drop the buffer — deallocated by MiningBuffer.deinit
+        }
     }
 }
 

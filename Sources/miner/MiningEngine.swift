@@ -45,7 +45,7 @@ final class MiningEngine: @unchecked Sendable {
         self.params = ConsensusParams.params(for: network)
         self.threads = threads > 0 ? threads : max(1, ProcessInfo.processInfo.activeProcessorCount - 1)
         self.logger = logger
-        self.bufferPool = BufferPool(slots: ConsensusParams.params(for: network).balloonSlots)
+        self.bufferPool = BufferPool(slots: ConsensusParams.params(for: network).balloonSlots, maxPooled: self.threads)
     }
 
     /// Start or update mining on a job.
