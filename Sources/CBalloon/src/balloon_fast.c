@@ -333,26 +333,16 @@ int balloon_hash_fast(
         counter++;
     }
 
-    // Phase 2: Mix — with prefetching for random accesses
+    // Phase 2: Mix — identical to simple version but with prefetch hints.
+    // The prefetch is issued right after we learn the random index (step 2a),
+    // giving the step 2b setup (~20ns) plus any pipeline stalls as lead time.
+    // Additionally, we prefetch the NEXT slot's previous neighbor (sequential,
+    // but may still miss if evicted during the random access).
     for (int round = 0; round < rounds; round++) {
-        // Pre-compute the random index for slot 0 and prefetch
-        uint64_t base_counter = counter;
-        int next_rand_idx = -1;
-        {
-            // Random index counter for slot 0 = base_counter + 0*3 + 1
-            // But we need the counter AFTER step 1, so: base_counter + 1
-            uint64_t rand_ctr = base_counter + 1;
-            next_rand_idx = compute_random_idx(rand_ctr, round, 0, 0, slots, prefetch_inp);
-            __builtin_prefetch(buf + (size_t)next_rand_idx * 32, 0, 0);
-        }
-
         for (int i = 0; i < slots; i++) {
             if ((i & 0xFFFF) == 0 && cancelled && *cancelled) return -1;
-
-            int rand_idx = next_rand_idx;
-
-            // Step 1: hash(counter || buf[i] || buf[prev])
             int off = i * 32;
+
             store_u64le(inp, counter);
             copy32(buf + off, inp + 8);
             int prev = (i == 0) ? slots - 1 : i - 1;
@@ -360,36 +350,18 @@ int balloon_hash_fast(
             blake2b256_single(inp, 72, buf + off);
             counter++;
 
-            // Pre-compute random index for NEXT slot and prefetch
-            // (gives ~2 BLAKE2b calls of lead time before the data is needed)
-            if (i + 1 < slots) {
-                // Random index counter for slot i+1:
-                // After slot i: counter = base_counter + i*3 + 3
-                // Step 2a of slot i+1 uses counter = base_counter + (i+1)*3 + 1
-                uint64_t next_rand_ctr = base_counter + (uint64_t)(i + 1) * 3 + 1;
-                next_rand_idx = compute_random_idx(
-                    next_rand_ctr, round, i + 1, 0, slots, prefetch_inp
-                );
-                __builtin_prefetch(buf + (size_t)next_rand_idx * 32, 0, 0);
-            }
-
             for (int j = 0; j < delta; j++) {
-                // Step 2a: compute random index (reuse pre-computed for j=0)
-                int idx;
-                if (j == 0) {
-                    idx = rand_idx;
-                } else {
-                    store_u64le(inp, counter);
-                    store_u64le(inp + 8,  (uint64_t)round);
-                    store_u64le(inp + 16, (uint64_t)i);
-                    store_u64le(inp + 24, (uint64_t)j);
-                    uint8_t tmp[32];
-                    blake2b256_single(inp, 32, tmp);
-                    idx = (int)(load_u64le(tmp) % (uint64_t)slots);
-                }
-                counter++;
+                store_u64le(inp, counter);
+                store_u64le(inp + 8,  (uint64_t)round);
+                store_u64le(inp + 16, (uint64_t)i);
+                store_u64le(inp + 24, (uint64_t)j);
+                uint8_t tmp[32];
+                blake2b256_single(inp, 32, tmp);
+                int idx = (int)(load_u64le(tmp) % (uint64_t)slots);
 
-                // Step 2b: hash(counter || buf[i] || buf[idx])
+                // Prefetch the random neighbor ASAP after learning the index.
+                __builtin_prefetch(buf + (size_t)idx * 32, 0, 0);
+
                 store_u64le(inp, counter);
                 copy32(buf + off, inp + 8);
                 copy32(buf + (size_t)idx * 32, inp + 40);
@@ -400,6 +372,74 @@ int balloon_hash_fast(
     }
 
     // Phase 3: Extract
+    memcpy(output, buf + (size_t)(slots - 1) * 32, 32);
+    return 0;
+}
+
+// Exposed for testing
+void balloon_blake2b256_test(const uint8_t *input, int input_len, uint8_t *output) {
+    blake2b256_single(input, input_len, output);
+}
+
+// Simple BalloonHash — direct translation of the algorithm, no prefetch optimization.
+int balloon_hash_simple(
+    const uint8_t *password, int password_len,
+    const uint8_t *salt, int salt_len,
+    uint8_t *buf,
+    uint8_t *inp,
+    int slots, int rounds, int delta,
+    uint8_t *output,
+    const volatile int *cancelled
+) {
+    uint64_t counter = 0;
+
+    // Phase 1: Expand
+    store_u64le(inp, counter);
+    int len = 8;
+    memcpy(inp + len, password, (size_t)password_len); len += password_len;
+    memcpy(inp + len, salt, (size_t)salt_len); len += salt_len;
+    blake2b256_single(inp, len, buf);
+    counter++;
+
+    for (int i = 1; i < slots; i++) {
+        if ((i & 0xFFFF) == 0 && cancelled && *cancelled) return -1;
+        store_u64le(inp, counter);
+        copy32(buf + (i - 1) * 32, inp + 8);
+        blake2b256_single(inp, 40, buf + i * 32);
+        counter++;
+    }
+
+    // Phase 2: Mix — straight translation, no prefetch
+    for (int round = 0; round < rounds; round++) {
+        for (int i = 0; i < slots; i++) {
+            if ((i & 0xFFFF) == 0 && cancelled && *cancelled) return -1;
+            int off = i * 32;
+
+            store_u64le(inp, counter);
+            copy32(buf + off, inp + 8);
+            int prev = (i == 0) ? slots - 1 : i - 1;
+            copy32(buf + prev * 32, inp + 40);
+            blake2b256_single(inp, 72, buf + off);
+            counter++;
+
+            for (int j = 0; j < delta; j++) {
+                store_u64le(inp, counter);
+                store_u64le(inp + 8,  (uint64_t)round);
+                store_u64le(inp + 16, (uint64_t)i);
+                store_u64le(inp + 24, (uint64_t)j);
+                uint8_t tmp[32];
+                blake2b256_single(inp, 32, tmp);
+                int idx = (int)(load_u64le(tmp) % (uint64_t)slots);
+
+                store_u64le(inp, counter);
+                copy32(buf + off, inp + 8);
+                copy32(buf + (size_t)idx * 32, inp + 40);
+                blake2b256_single(inp, 72, buf + off);
+                counter++;
+            }
+        }
+    }
+
     memcpy(output, buf + (size_t)(slots - 1) * 32, 32);
     return 0;
 }

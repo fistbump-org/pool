@@ -43,6 +43,7 @@ let package = Package(
         .executableTarget(
             name: "miner",
             dependencies: [
+                "CBalloon",
                 .product(name: "Base", package: "fbd"),
                 .product(name: "ExtCrypto", package: "fbd"),
                 .product(name: "Protocol", package: "fbd"),
@@ -51,6 +52,16 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/miner"
+        ),
+
+        .executableTarget(
+            name: "balloon-test",
+            dependencies: [
+                "CBalloon",
+                .product(name: "Base", package: "fbd"),
+                .product(name: "ExtCrypto", package: "fbd"),
+            ],
+            path: "Sources/balloon-test"
         ),
     ]
 )

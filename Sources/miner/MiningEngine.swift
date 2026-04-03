@@ -189,6 +189,8 @@ final class MiningEngine: @unchecked Sendable {
                         nonce = UInt32(tid)
                     }
 
+                    buffer.cancelled = result.shouldStop ? 1 : 0
+
                     // Update nonce in salt (first 4 bytes, little-endian)
                     salt[0] = UInt8(truncatingIfNeeded: nonce)
                     salt[1] = UInt8(truncatingIfNeeded: nonce &>> 8)

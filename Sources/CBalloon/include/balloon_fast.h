@@ -26,4 +26,18 @@ int balloon_hash_fast(
     const volatile int *cancelled
 );
 
+/// Exposed for testing: single-block BLAKE2b-256.
+void balloon_blake2b256_test(const uint8_t *input, int input_len, uint8_t *output);
+
+/// Simple BalloonHash WITHOUT prefetching (for correctness validation).
+int balloon_hash_simple(
+    const uint8_t *password, int password_len,
+    const uint8_t *salt, int salt_len,
+    uint8_t *buf,
+    uint8_t *inp,
+    int slots, int rounds, int delta,
+    uint8_t *output,
+    const volatile int *cancelled
+);
+
 #endif
