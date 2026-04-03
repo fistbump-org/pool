@@ -1,3 +1,3 @@
 enum MinerVersion {
-    static let id = "scalar-c"
+    static let id = "swift-proven"
 }

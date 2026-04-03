@@ -43,7 +43,6 @@ let package = Package(
         .executableTarget(
             name: "miner",
             dependencies: [
-                "CBalloon",
                 .product(name: "Base", package: "fbd"),
                 .product(name: "ExtCrypto", package: "fbd"),
                 .product(name: "Protocol", package: "fbd"),
