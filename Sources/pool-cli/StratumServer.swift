@@ -582,7 +582,11 @@ public final class StratumServer: @unchecked Sendable {
     private func trimJobs() {
         // Caller must hold lock
         if recentJobs.count > maxRecentJobs {
-            let sortedKeys = recentJobs.keys.sorted()
+            // Sort numerically by parsing hex IDs (not lexicographic string sort,
+            // which breaks when ID length changes, e.g. "12cc" < "8ca" as strings).
+            let sortedKeys = recentJobs.keys.sorted {
+                (UInt64($0, radix: 16) ?? 0) < (UInt64($1, radix: 16) ?? 0)
+            }
             for key in sortedKeys.prefix(recentJobs.count - maxRecentJobs) {
                 recentJobs.removeValue(forKey: key)
             }
