@@ -163,13 +163,16 @@ final class StratumClient: @unchecked Sendable {
         send("{\"id\":\(id),\"method\":\"mining.submit\",\"params\":[\"\(username)\",\"\(jobId)\",\"\(en2Hex)\",\"\(timeHex)\",\"\(nonceHex)\",\"\(proofHex)\"]}\n")
 
         let response = try readResponse()
-        if let result = response["result"] as? Bool {
-            if !result, let error = response["error"] {
-                rejectReason = "\(error)"
-            }
-            return result
+        if let result = response["result"] as? Bool, result {
+            rejectReason = nil
+            return true
         }
-        rejectReason = "no result in response"
+        // Rejected or null result — capture error
+        if let error = response["error"], !(error is NSNull) {
+            rejectReason = "\(error)"
+        } else {
+            rejectReason = "rejected (no detail)"
+        }
         return false
     }
 
