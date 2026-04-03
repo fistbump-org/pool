@@ -67,17 +67,20 @@ static const uint8_t sigma[192] = {
 
 #if BLAKE2B_SSSE3
 
-// Rotation constants for SSSE3 shuffle
-static const __m128i rot16_shuf = {
-    0x0504070601000302ULL, 0x0D0C0F0E09080B0AULL
+// Shuffle masks for 64-bit lane rotations via SSSE3 _mm_shuffle_epi8.
+// Each mask maps output[i] = input[(i+N)%8] within each 64-bit lane.
+// ROTR16: shift each 64-bit lane right by 16 bits (2 bytes)
+static const uint8_t ROT16[16] __attribute__((aligned(16))) = {
+    2,3,4,5,6,7,0,1, 10,11,12,13,14,15,8,9
 };
-static const __m128i rot24_shuf = {
-    0x0407060500030201ULL, 0x0C0F0E0D080B0A09ULL
+// ROTR24: shift each 64-bit lane right by 24 bits (3 bytes)
+static const uint8_t ROT24[16] __attribute__((aligned(16))) = {
+    3,4,5,6,7,0,1,2, 11,12,13,14,15,8,9,10
 };
 
 #define ROTR32(x)  _mm_shuffle_epi32((x), _MM_SHUFFLE(2,3,0,1))
-#define ROTR24(x)  _mm_shuffle_epi8((x), rot24_shuf)
-#define ROTR16(x)  _mm_shuffle_epi8((x), rot16_shuf)
+#define ROTR24(x)  _mm_shuffle_epi8((x), *(const __m128i*)ROT24)
+#define ROTR16(x)  _mm_shuffle_epi8((x), *(const __m128i*)ROT16)
 #define ROTR63(x)  _mm_xor_si128(_mm_srli_epi64((x), 63), _mm_add_epi64((x), (x)))
 
 #define G1(r1l,r2l,r3l,r4l,r1h,r2h,r3h,r4h,b0,b1)  \
