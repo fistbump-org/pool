@@ -367,8 +367,10 @@ public final class StratumServer: @unchecked Sendable {
         }
 
         // Reconstruct extraNonce: poolPrefix(8) || extraNonce1(4) || extraNonce2(12)
+        // extraNonce1 was sent as big-endian hex ("%08x"), so reconstruct with bigEndian
+        // to match the bytes the miner decoded from that hex string.
         var extraNonce = job.poolExtraNonce
-        extraNonce.append(contentsOf: withUnsafeBytes(of: worker.extraNonce1.littleEndian) { Array($0) })
+        extraNonce.append(contentsOf: withUnsafeBytes(of: worker.extraNonce1.bigEndian) { Array($0) })
         extraNonce.append(contentsOf: extraNonce2)
         assert(extraNonce.count == 24)
 
