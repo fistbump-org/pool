@@ -98,12 +98,12 @@ struct MinerCLI: AsyncParsableCommand {
             logger: logger
         )
 
-        // When we get a new job, start mining it
+        // When we get a new job, start mining it.
+        // clean=true (new block): hard restart threads immediately.
+        // clean=false (new transactions): threads pick up new job after current hash finishes.
         client.onNewJob = { [engine, logger] job, clean in
             logger.info("New job: \(job.id) (clean=\(clean))", source: "Miner")
-            if clean {
-                engine.mine(job: job)
-            }
+            engine.mine(job: job, clean: clean)
         }
 
         client.onNewDifficulty = { [logger] diff in

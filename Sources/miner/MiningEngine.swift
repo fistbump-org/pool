@@ -7,9 +7,12 @@ import Protocol
 
 /// Multi-threaded BalloonHash mining engine for Stratum pool mining.
 ///
-/// Receives jobs from the Stratum client, runs multiple threads iterating
-/// nonces, and submits shares (with BalloonProof) when the hash meets the
-/// share target.
+/// Optimizations over the baseline implementation:
+/// - Pre-computes the password hash once per job (not per nonce)
+/// - Reuses 512 MB scratchpad buffers across nonce iterations (no alloc/dealloc/zeroing per hash)
+/// - Randomizes extraNonce2 to avoid duplicate work with other miners on the same pool
+/// - Submits shares asynchronously so mining threads are never blocked on I/O
+/// - Non-clean jobs picked up between hashes (no thread restart, no wasted work)
 final class MiningEngine: @unchecked Sendable {
     private let client: StratumClient
     private let params: ConsensusParams
@@ -24,136 +27,249 @@ final class MiningEngine: @unchecked Sendable {
     private var totalHashes: UInt64 = 0
     private var miningStartTime: Date?
 
+    /// Buffer pool — survives across job changes so threads reuse 512 MB allocations.
+    private let bufferPool: BufferPool
+
+    /// Background queue for proof generation + share submission.
+    private let shareQueue = DispatchQueue(label: "org.fistbump.miner.shares", qos: .userInitiated)
+
+    /// Prepared job data that threads pick up between hash iterations.
+    /// Protected by `lock`. Updated on non-clean jobs without restarting threads.
+    private var preparedJob: PreparedJob?
+    /// Incremented every time preparedJob changes. Threads compare against their
+    /// local copy to know when to switch.
+    private var jobGeneration: UInt64 = 0
+
     init(client: StratumClient, network: NetworkType, threads: Int, logger: Logger) {
         self.client = client
         self.params = ConsensusParams.params(for: network)
         self.threads = threads > 0 ? threads : max(1, ProcessInfo.processInfo.activeProcessorCount - 1)
         self.logger = logger
+        self.bufferPool = BufferPool(slots: ConsensusParams.params(for: network).balloonSlots)
     }
 
-    /// Start mining on a job. Cancels any existing mining work.
-    func mine(job: MinerJob) {
-        // Stop previous work
-        lock.lock()
-        currentResult?.stop()
-        let result = MiningResult()
-        currentResult = result
-        if miningStartTime == nil { miningStartTime = Date() }
-        lock.unlock()
-
+    /// Start or update mining on a job.
+    ///
+    /// - `clean=true`: new block — hard restart all threads immediately.
+    /// - `clean=false`: new transactions — threads pick up new job after current hash finishes.
+    func mine(job: MinerJob, clean: Bool = true) {
         let extraNonce1 = client.extraNonce1
         let en2Size = client.extraNonce2Size
         let difficulty = client.difficulty
 
-        // Build the header fields from the job
+        // Parse header fields
         let prevBlock = (try? Hash256.fromHex(job.prevHash)) ?? .zero
         let merkleRoot = (try? Hash256.fromHex(job.merkleRoot)) ?? .zero
         let witnessRoot = (try? Hash256.fromHex(job.witnessRoot)) ?? .zero
         let treeRoot = (try? Hash256.fromHex(job.treeRoot)) ?? .zero
         let reservedRoot = (try? Hash256.fromHex(job.reservedRoot)) ?? .zero
 
-        // Compute share target from difficulty
+        // Pre-compute the password hash for this job.
+        let password: [UInt8]
+        do {
+            var pw = [UInt8]()
+            pw.reserveCapacity(176)
+            pw.append(contentsOf: prevBlock.bytes)
+            pw.append(contentsOf: merkleRoot.bytes)
+            pw.append(contentsOf: witnessRoot.bytes)
+            pw.append(contentsOf: treeRoot.bytes)
+            pw.append(contentsOf: reservedRoot.bytes)
+            var time = job.time.littleEndian
+            pw.append(contentsOf: withUnsafeBytes(of: &time) { Array($0) })
+            var bits = job.bits.littleEndian
+            pw.append(contentsOf: withUnsafeBytes(of: &bits) { Array($0) })
+            var version = job.version.littleEndian
+            pw.append(contentsOf: withUnsafeBytes(of: &version) { Array($0) })
+            password = try Blake2bHash.hash(pw, size: 32)
+        } catch {
+            logger.error("Failed to hash password: \(error)", source: "Miner")
+            return
+        }
+
         let shareTarget = targetForDifficulty(difficulty)
         let networkTarget = Target256.fromCompact(job.bits)
+
+        let prepared = PreparedJob(
+            job: job,
+            password: password,
+            prevBlock: prevBlock,
+            merkleRoot: merkleRoot,
+            witnessRoot: witnessRoot,
+            treeRoot: treeRoot,
+            reservedRoot: reservedRoot,
+            shareTarget: shareTarget,
+            networkTarget: networkTarget,
+            extraNonce1: extraNonce1,
+            en2Size: en2Size
+        )
+
+        lock.lock()
+        preparedJob = prepared
+        jobGeneration &+= 1
+        let needsRestart = clean || currentResult == nil
+        if needsRestart {
+            currentResult?.stop()
+        }
+        let result: MiningResult
+        if needsRestart {
+            result = MiningResult()
+            currentResult = result
+        } else {
+            result = currentResult!
+        }
+        if miningStartTime == nil { miningStartTime = Date() }
+        let gen = jobGeneration
+        lock.unlock()
+
+        guard needsRestart else {
+            // Non-clean: threads will pick up the new preparedJob after their current hash
+            logger.debug("Queued non-clean job \(job.id) (gen \(gen))", source: "Miner")
+            return
+        }
 
         let threadCount = self.threads
         let logger = self.logger
         let params = self.params
         let client = self.client
-        let jobId = job.id
+        let slots = params.balloonSlots
+        let rounds = params.balloonRounds
+        let delta = params.balloonDelta
 
-        logger.debug("Mining job \(jobId)", metadata: [
+        logger.debug("Mining job \(job.id) (clean restart)", metadata: [
             "height_bits": "\(String(format: "0x%08x", job.bits))",
-            "difficulty": "\(difficulty)",
+            "difficulty": "\(String(format: "%.2f", client.difficulty))",
             "threads": "\(threadCount)",
         ], source: "Miner")
 
         for tid in 0..<threadCount {
+            let bufferPool = self.bufferPool
+            let shareQueue = self.shareQueue
+
             Thread.detachNewThread { [weak self] in
-                // Each thread gets its own extraNonce2 (thread ID in first bytes)
-                var extraNonce2 = [UInt8](repeating: 0, count: en2Size)
-                // Encode thread ID into first 2 bytes of extraNonce2
+                let buffer = bufferPool.checkout()
+                defer { bufferPool.checkin(buffer) }
+
+                // Build randomized extraNonce2
+                var extraNonce2 = [UInt8](repeating: 0, count: prepared.en2Size)
                 extraNonce2[0] = UInt8(tid & 0xFF)
                 extraNonce2[1] = UInt8((tid >> 8) & 0xFF)
-
-                // Build full extraNonce: pool(8) + en1(4) + en2(12)
-                var extraNonce = job.poolExtraNonce
-                extraNonce.append(contentsOf: extraNonce1)
-                extraNonce.append(contentsOf: extraNonce2)
-                if extraNonce.count < 24 {
-                    extraNonce.append(contentsOf: [UInt8](repeating: 0, count: 24 - extraNonce.count))
+                if prepared.en2Size > 2 {
+                    for i in 2..<prepared.en2Size {
+                        extraNonce2[i] = UInt8.random(in: 0...255)
+                    }
                 }
 
                 var nonce = UInt32(tid)
                 let stride = UInt32(threadCount)
-                var hashes: UInt64 = 0
+
+                // Current job state (updated when generation changes)
+                var curJob = prepared
+                var curGen = gen
+                var curExtraNonce = Self.buildExtraNonce(job: curJob, extraNonce2: extraNonce2)
+                var salt = Self.buildSaltTemplate(extraNonce: curExtraNonce)
+                var curPassword = curJob.password
+                var curShareTarget = curJob.shareTarget
+                var curNetworkTarget = curJob.networkTarget
 
                 while !result.shouldStop {
-                    let header = BlockHeader(
-                        nonce: nonce,
-                        time: job.time,
-                        prevBlock: prevBlock,
-                        treeRoot: treeRoot,
-                        extraNonce: extraNonce,
-                        reservedRoot: reservedRoot,
-                        witnessRoot: witnessRoot,
-                        merkleRoot: merkleRoot,
-                        version: job.version,
-                        bits: job.bits
-                    )
+                    // Check for non-clean job update between hash iterations
+                    self?.lock.lock()
+                    let latestGen = self?.jobGeneration ?? curGen
+                    let latestJob = self?.preparedJob
+                    self?.lock.unlock()
 
-                    let hash: Hash256
+                    if latestGen != curGen, let latestJob {
+                        curJob = latestJob
+                        curGen = latestGen
+                        curExtraNonce = Self.buildExtraNonce(job: curJob, extraNonce2: extraNonce2)
+                        salt = Self.buildSaltTemplate(extraNonce: curExtraNonce)
+                        curPassword = curJob.password
+                        curShareTarget = curJob.shareTarget
+                        curNetworkTarget = curJob.networkTarget
+                        // Reset nonce for new job
+                        nonce = UInt32(tid)
+                    }
+
+                    // Update nonce in salt (first 4 bytes, little-endian)
+                    salt[0] = UInt8(truncatingIfNeeded: nonce)
+                    salt[1] = UInt8(truncatingIfNeeded: nonce &>> 8)
+                    salt[2] = UInt8(truncatingIfNeeded: nonce &>> 16)
+                    salt[3] = UInt8(truncatingIfNeeded: nonce &>> 24)
+
+                    let hashBytes: [UInt8]
                     do {
-                        hash = try ProofOfWork.powHash(
-                            for: header, params: params,
+                        hashBytes = try FastBalloonHash.hash(
+                            password: curPassword,
+                            salt: salt,
+                            buffer: buffer,
+                            slots: slots,
+                            rounds: rounds,
+                            delta: delta,
                             isCancelled: { result.shouldStop }
                         )
-                    } catch is BalloonHash.Cancelled {
+                    } catch is FastBalloonHash.Cancelled {
                         break
                     } catch {
                         logger.error("Thread \(tid) error: \(error)", source: "Miner")
                         return
                     }
-                    hashes += 1
                     self?.addHashes(1)
 
-                    let hashTarget = Target256(bigEndian: hash.bytes)
+                    let hashTarget = Target256(bigEndian: hashBytes)
 
-                    if hashTarget <= shareTarget {
-                        // Found a share! Generate the proof.
-                        let isBlock = hashTarget <= networkTarget
+                    if hashTarget <= curShareTarget {
+                        let isBlock = hashTarget <= curNetworkTarget
+                        let capturedNonce = nonce
+                        let capturedEN2 = extraNonce2
+                        let capturedJob = curJob
+                        let capturedExtraNonce = curExtraNonce
 
-                        do {
-                            let (_, proof) = try ProofOfWork.powHashWithProof(
-                                for: header, params: params
+                        shareQueue.async { [weak self] in
+                            let header = BlockHeader(
+                                nonce: capturedNonce,
+                                time: capturedJob.job.time,
+                                prevBlock: capturedJob.prevBlock,
+                                treeRoot: capturedJob.treeRoot,
+                                extraNonce: capturedExtraNonce,
+                                reservedRoot: capturedJob.reservedRoot,
+                                witnessRoot: capturedJob.witnessRoot,
+                                merkleRoot: capturedJob.merkleRoot,
+                                version: capturedJob.job.version,
+                                bits: capturedJob.job.bits
                             )
-                            let proofBytes = proof.serialize()
 
-                            let accepted = try client.submit(
-                                jobId: jobId,
-                                extraNonce2: extraNonce2,
-                                nTime: job.time,
-                                nonce: nonce,
-                                proof: proofBytes
-                            )
+                            do {
+                                let (_, proof) = try ProofOfWork.powHashWithProof(
+                                    for: header, params: params
+                                )
+                                let proofBytes = proof.serialize()
 
-                            if accepted {
-                                self?.recordAccepted()
-                                if isBlock {
-                                    self?.recordBlock()
-                                    logger.info("Block found! nonce=\(nonce)", source: "Miner")
+                                let accepted = try client.submit(
+                                    jobId: capturedJob.job.id,
+                                    extraNonce2: capturedEN2,
+                                    nTime: capturedJob.job.time,
+                                    nonce: capturedNonce,
+                                    proof: proofBytes
+                                )
+
+                                if accepted {
+                                    self?.recordAccepted()
+                                    if isBlock {
+                                        self?.recordBlock()
+                                        logger.info("Block found! nonce=\(capturedNonce)", source: "Miner")
+                                    } else {
+                                        logger.info("Share accepted", metadata: [
+                                            "nonce": "\(capturedNonce)",
+                                            "thread": "\(tid)",
+                                        ], source: "Miner")
+                                    }
                                 } else {
-                                    logger.info("Share accepted", metadata: [
-                                        "nonce": "\(nonce)",
-                                        "thread": "\(tid)",
-                                    ], source: "Miner")
+                                    self?.recordRejected()
+                                    logger.warning("Share rejected", source: "Miner")
                                 }
-                            } else {
-                                self?.recordRejected()
-                                logger.warning("Share rejected", source: "Miner")
+                            } catch {
+                                logger.error("Submit error: \(error)", source: "Miner")
                             }
-                        } catch {
-                            logger.error("Submit error: \(error)", source: "Miner")
                         }
                     }
 
@@ -161,8 +277,6 @@ final class MiningEngine: @unchecked Sendable {
                     if overflow { break }
                     nonce = next
                 }
-
-                // totalHashes already updated per-hash above
             }
         }
     }
@@ -183,7 +297,25 @@ final class MiningEngine: @unchecked Sendable {
         return (accepted, rejected, blocks, hr)
     }
 
-    // MARK: - Private
+    // MARK: - Private Helpers
+
+    private static func buildExtraNonce(job: PreparedJob, extraNonce2: [UInt8]) -> [UInt8] {
+        var en = job.job.poolExtraNonce
+        en.append(contentsOf: job.extraNonce1)
+        en.append(contentsOf: extraNonce2)
+        if en.count < 24 {
+            en.append(contentsOf: [UInt8](repeating: 0, count: 24 - en.count))
+        }
+        return en
+    }
+
+    private static func buildSaltTemplate(extraNonce: [UInt8]) -> [UInt8] {
+        var salt = [UInt8](repeating: 0, count: 28)
+        for i in 0..<min(extraNonce.count, 24) {
+            salt[i + 4] = extraNonce[i]
+        }
+        return salt
+    }
 
     private func recordAccepted() {
         lock.lock()
@@ -221,12 +353,28 @@ final class MiningEngine: @unchecked Sendable {
         value /= diff
         var result = [UInt8](repeating: 0, count: 32)
         var remaining = value
-        for i in stride(from: 31, through: 0, by: -1) {
+        for i in Swift.stride(from: 31, through: 0, by: -1) {
             result[i] = UInt8(remaining.truncatingRemainder(dividingBy: 256))
             remaining = (remaining / 256).rounded(.down)
         }
         return Target256(bigEndian: result)
     }
+}
+
+// MARK: - Prepared Job (pre-computed, shared across threads)
+
+private struct PreparedJob: @unchecked Sendable {
+    let job: MinerJob
+    let password: [UInt8]         // Pre-hashed BLAKE2b-256 of header fields
+    let prevBlock: Hash256
+    let merkleRoot: Hash256
+    let witnessRoot: Hash256
+    let treeRoot: Hash256
+    let reservedRoot: Hash256
+    let shareTarget: Target256
+    let networkTarget: Target256
+    let extraNonce1: [UInt8]
+    let en2Size: Int
 }
 
 // MARK: - Mining Result (thread coordination)
