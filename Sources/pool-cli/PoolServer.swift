@@ -82,47 +82,24 @@ public final class PoolServer: Sendable {
             }
         }
 
-        // Wait for cancellation (SIGINT/SIGTERM)
-        await withCheckedSignal()
+        // Wait for SIGINT/SIGTERM
+        signal(SIGINT) { _ in _poolShouldStop = true }
+        signal(SIGTERM) { _ in _poolShouldStop = true }
+        while !_poolShouldStop {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
 
         logger.info("Shutting down...", source: "Pool")
         payoutManager.stop()
         api?.shutdown()
         stratum.shutdown()
     }
-
-    private func withCheckedSignal() async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            #if canImport(Darwin)
-            signal(SIGINT) { _ in
-                _poolContinuation?.resume()
-                _poolContinuation = nil
-            }
-            signal(SIGTERM) { _ in
-                _poolContinuation?.resume()
-                _poolContinuation = nil
-            }
-            _poolContinuation = continuation
-            #else
-            let src1 = DispatchSource.makeSignalSource(signal: SIGINT)
-            let src2 = DispatchSource.makeSignalSource(signal: SIGTERM)
-            src1.setEventHandler { continuation.resume() }
-            src2.setEventHandler { continuation.resume() }
-            signal(SIGINT, SIG_IGN)
-            signal(SIGTERM, SIG_IGN)
-            src1.resume()
-            src2.resume()
-            #endif
-        }
-    }
 }
 
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
+#if canImport(Glibc)
 import Glibc
 #elseif canImport(Musl)
 import Musl
 #endif
 
-nonisolated(unsafe) private var _poolContinuation: CheckedContinuation<Void, Never>?
+nonisolated(unsafe) private var _poolShouldStop = false
