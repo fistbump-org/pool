@@ -123,10 +123,7 @@ static void blake2b256_single(const uint8_t *input, int len, uint8_t *output) {
     memcpy(m, input, (size_t)len < 128 ? (size_t)len : 128);
 
     // State init: h = IV ^ param_block (digest=32, key=0, fanout=1, depth=1)
-    __m128i row1l = _mm_xor_si128(_mm_set_epi64x((long long)iv[1], (long long)(iv[0] ^ 0x01010020ULL)),
-                                  _mm_setzero_si128());
-    // Simplify: just set directly
-    row1l = _mm_set_epi64x((long long)iv[1], (long long)(iv[0] ^ 0x01010020ULL));
+    __m128i row1l = _mm_set_epi64x((long long)iv[1], (long long)(iv[0] ^ 0x01010020ULL));
     __m128i row1h = _mm_set_epi64x((long long)iv[3], (long long)iv[2]);
     __m128i row2l = _mm_set_epi64x((long long)iv[5], (long long)iv[4]);
     __m128i row2h = _mm_set_epi64x((long long)iv[7], (long long)iv[6]);
@@ -143,23 +140,26 @@ static void blake2b256_single(const uint8_t *input, int len, uint8_t *output) {
         const uint8_t *s = sigma + r * 16;
         __m128i b0, b1;
 
-        // Column step
-        b0 = _mm_set_epi64x((long long)m[s[1]], (long long)m[s[0]]);
-        b1 = _mm_set_epi64x((long long)m[s[3]], (long long)m[s[2]]);
+        // Column step: G1 adds x words, G2 adds y words
+        // G(v0,..,m[s[0]],m[s[1]]), G(v1,..,m[s[2]],m[s[3]]),
+        // G(v2,..,m[s[4]],m[s[5]]), G(v3,..,m[s[6]],m[s[7]])
+        // row1l=(v0,v1), row1h=(v2,v3) → b0 low=v0's word, b0 high=v1's word
+        b0 = _mm_set_epi64x((long long)m[s[2]], (long long)m[s[0]]);   // x: v0, v1
+        b1 = _mm_set_epi64x((long long)m[s[6]], (long long)m[s[4]]);   // x: v2, v3
         G1(row1l,row2l,row3l,row4l,row1h,row2h,row3h,row4h,b0,b1);
-        b0 = _mm_set_epi64x((long long)m[s[5]], (long long)m[s[4]]);
-        b1 = _mm_set_epi64x((long long)m[s[7]], (long long)m[s[6]]);
+        b0 = _mm_set_epi64x((long long)m[s[3]], (long long)m[s[1]]);   // y: v0, v1
+        b1 = _mm_set_epi64x((long long)m[s[7]], (long long)m[s[5]]);   // y: v2, v3
         G2(row1l,row2l,row3l,row4l,row1h,row2h,row3h,row4h,b0,b1);
 
         // Diagonalize
         DIAG(row1l,row2l,row3l,row4l,row1h,row2h,row3h,row4h);
 
         // Diagonal step
-        b0 = _mm_set_epi64x((long long)m[s[9]],  (long long)m[s[8]]);
-        b1 = _mm_set_epi64x((long long)m[s[11]], (long long)m[s[10]]);
+        b0 = _mm_set_epi64x((long long)m[s[10]], (long long)m[s[8]]);  // x: v0, v1
+        b1 = _mm_set_epi64x((long long)m[s[14]], (long long)m[s[12]]); // x: v2, v3
         G1(row1l,row2l,row3l,row4l,row1h,row2h,row3h,row4h,b0,b1);
-        b0 = _mm_set_epi64x((long long)m[s[13]], (long long)m[s[12]]);
-        b1 = _mm_set_epi64x((long long)m[s[15]], (long long)m[s[14]]);
+        b0 = _mm_set_epi64x((long long)m[s[11]], (long long)m[s[9]]);  // y: v0, v1
+        b1 = _mm_set_epi64x((long long)m[s[15]], (long long)m[s[13]]); // y: v2, v3
         G2(row1l,row2l,row3l,row4l,row1h,row2h,row3h,row4h,b0,b1);
 
         // Undiagonalize
