@@ -164,10 +164,17 @@ final class StratumClient: @unchecked Sendable {
 
         let response = try readResponse()
         if let result = response["result"] as? Bool {
+            if !result, let error = response["error"] {
+                rejectReason = "\(error)"
+            }
             return result
         }
+        rejectReason = "no result in response"
         return false
     }
+
+    /// Reason for last rejected share (for logging).
+    var rejectReason: String?
 
     /// Read and process incoming messages (notifications + responses).
     /// Call this in a loop from the read thread.

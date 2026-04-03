@@ -283,7 +283,8 @@ final class MiningEngine: @unchecked Sendable {
                                     }
                                 } else {
                                     self?.recordRejected()
-                                    logger.warning("Share rejected", source: "Miner")
+                                    let reason = client.rejectReason ?? "unknown"
+                                    logger.warning("Share rejected: \(reason)", source: "Miner")
                                 }
                             } catch {
                                 logger.error("Submit error: \(error)", source: "Miner")
