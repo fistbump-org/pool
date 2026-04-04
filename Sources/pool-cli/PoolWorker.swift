@@ -50,7 +50,8 @@ public final class PoolWorker: @unchecked Sendable {
 
     // VarDiff state
     public var difficulty: Double = 1.0
-    public var shareTimestamps: [Date] = []
+    public var shareTimestamps: [Date] = []  // For hashrate calculation
+    public var vardiffTimestamps: [Date] = []  // For VarDiff retargeting
     public var lastRetargetTime: Date
 
     // Duplicate detection: set of "jobId:nonce:en2:time"
@@ -68,14 +69,17 @@ public final class PoolWorker: @unchecked Sendable {
         self.lastRetargetTime = Date()
     }
 
-    /// Record a share submission timestamp for vardiff calculation.
+    /// Record a share submission timestamp for hashrate and vardiff calculation.
     public func recordShareTime() {
         let now = Date()
         shareTimestamps.append(now)
+        vardiffTimestamps.append(now)
         lastShareTime = now
-        // Keep last 100 timestamps
         if shareTimestamps.count > 100 {
             shareTimestamps.removeFirst(shareTimestamps.count - 100)
+        }
+        if vardiffTimestamps.count > 100 {
+            vardiffTimestamps.removeFirst(vardiffTimestamps.count - 100)
         }
     }
 
@@ -92,12 +96,22 @@ public final class PoolWorker: @unchecked Sendable {
     }
 
     /// Average time between recent shares (seconds), or nil if insufficient data.
+    /// Uses shareTimestamps for hashrate calculation (preserved across retargets).
     public var averageShareTime: Double? {
         guard shareTimestamps.count >= 3 else { return nil }
         let first = shareTimestamps.first!
         let last = shareTimestamps.last!
         let elapsed = last.timeIntervalSince(first)
         return elapsed / Double(shareTimestamps.count - 1)
+    }
+
+    /// Average time between shares for VarDiff retargeting (resets on retarget).
+    public var vardiffAverageShareTime: Double? {
+        guard vardiffTimestamps.count >= 3 else { return nil }
+        let first = vardiffTimestamps.first!
+        let last = vardiffTimestamps.last!
+        let elapsed = last.timeIntervalSince(first)
+        return elapsed / Double(vardiffTimestamps.count - 1)
     }
 
     /// Estimated hashrate based on difficulty and share rate (H/s).

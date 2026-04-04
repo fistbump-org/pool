@@ -26,7 +26,7 @@ public struct VarDiff: Sendable {
         let elapsed = now.timeIntervalSince(worker.lastRetargetTime)
         guard elapsed >= retargetInterval else { return nil }
 
-        guard let avgTime = worker.averageShareTime else {
+        guard let avgTime = worker.vardiffAverageShareTime else {
             // Not enough data yet — if they've been connected a while with no shares,
             // lower the difficulty.
             if elapsed > retargetInterval * 2 && worker.difficulty > minDiff {

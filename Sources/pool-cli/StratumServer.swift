@@ -230,7 +230,7 @@ public final class StratumServer: @unchecked Sendable {
             if let newDiff = vardiff.retarget(worker: worker) {
                 worker.difficulty = newDiff
                 worker.lastRetargetTime = Date()
-                worker.shareTimestamps.removeAll()
+                worker.vardiffTimestamps.removeAll()  // Clear only VarDiff timestamps
                 worker.sendSetDifficulty(newDiff)
                 logger.debug("Retarget", metadata: [
                     "worker": "\(worker.id)",
