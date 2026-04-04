@@ -45,7 +45,9 @@ final class MiningEngine: @unchecked Sendable {
         self.params = ConsensusParams.params(for: network)
         self.threads = threads > 0 ? threads : max(1, ProcessInfo.processInfo.activeProcessorCount - 1)
         self.logger = logger
-        self.bufferPool = BufferPool(slots: ConsensusParams.params(for: network).balloonSlots, maxPooled: self.threads)
+        // Cap pooled buffers low — each is 512 MB. Threads allocate on demand if pool is empty.
+        // The allocation cost is negligible vs the 10s BalloonHash computation.
+        self.bufferPool = BufferPool(slots: ConsensusParams.params(for: network).balloonSlots, maxPooled: 4)
     }
 
     /// Update the share target when pool changes difficulty mid-job.
