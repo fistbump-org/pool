@@ -53,11 +53,10 @@ public final class NodeRPC: Sendable {
         }
         let arg = segments.joined(separator: ", ")
 
-        // sendmany is wallet-scoped: params are [walletName, "none addr amt, none addr amt, ..."]
-        let result = try await call(method: "sendmany", params: [walletName, arg])
+        // Wallet name is passed as a separate "wallet" field in the RPC body, not in params
+        let result = try await call(method: "sendmany", params: [arg], wallet: walletName)
         guard let dict = result as? [String: Any],
               let txid = dict["txid"] as? String else {
-            // Some wallets return just the txid as a string
             if let txid = result as? String { return txid }
             throw PoolError.rpcError("unexpected sendmany response")
         }
@@ -87,7 +86,7 @@ public final class NodeRPC: Sendable {
 
     // MARK: - Transport
 
-    private func call(method: String, params: [Any]) async throws -> Any {
+    private func call(method: String, params: [Any], wallet: String? = nil) async throws -> Any {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -99,11 +98,12 @@ public final class NodeRPC: Sendable {
             request.setValue("Basic \(b64)", forHTTPHeaderField: "Authorization")
         }
 
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "method": method,
             "params": params,
             "id": 1,
         ]
+        if let wallet { body["wallet"] = wallet }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await session.data(for: request)
