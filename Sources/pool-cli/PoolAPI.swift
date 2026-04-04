@@ -84,7 +84,7 @@ public final class PoolAPI: @unchecked Sendable {
         let workers = stratum.workerSnapshots
         let shareStats = shareLog.stats
         let blocks = shareLog.foundBlocks
-        let totalHashrate = workers.reduce(0.0) { $0 + $1.hashrate }
+        let totalHashrate = workers.reduce(0.0) { $0 + ($1.hashrate > 0 ? $1.hashrate : 0) }
         let uptime = Int(Date().timeIntervalSince(startTime))
         let fee = shareLog.feePercent
 
