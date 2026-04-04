@@ -115,12 +115,9 @@ public final class PoolWorker: @unchecked Sendable {
     }
 
     /// Estimated hashrate based on difficulty and share rate (H/s).
+    /// Returns -1 if insufficient share data (fewer than 3 shares).
     public var estimatedHashrate: Double {
-        guard let avgTime = averageShareTime, avgTime > 0 else { return 0 }
-        // hashrate = difficulty * 2^32 / avgTime (for a standard double-SHA256 chain)
-        // For BalloonHash the "hash" cost is much higher, but difficulty is still
-        // defined as target = powLimit / difficulty, so this ratio holds for
-        // comparing workers within the pool.
+        guard let avgTime = averageShareTime, avgTime > 0 else { return -1 }
         return difficulty / avgTime
     }
 
