@@ -1,10 +1,11 @@
 import Foundation
+import Logging
 
-/// PPLNS share accounting, balance tracking, and payout management.
+/// PPLNS share accounting with database-backed block tracking.
 ///
-/// Maintains a sliding window of recent shares. When a block is found,
-/// the reward is attributed proportionally to shares in the window and
-/// credited to each miner's balance. Balances persist to disk.
+/// Maintains a sliding window of recent shares for PPLNS. When a block is found,
+/// the share window is snapshotted to the database. Rewards are credited only
+/// after blocks mature (handled by MaturityChecker).
 public final class ShareLog: @unchecked Sendable {
     private let lock = NSLock()
 
@@ -17,31 +18,19 @@ public final class ShareLog: @unchecked Sendable {
     /// PPLNS window size in total difficulty-weighted shares.
     private var windowSize: Double
 
-    /// Ring of recent shares.
+    /// Ring of recent shares (in-memory only, not persisted).
     private var shares: [Share] = []
 
-    /// Blocks found by the pool.
-    private var blocks: [FoundBlock] = []
+    /// Database for persistent storage.
+    private let db: PoolDatabase
 
-    /// Accumulated unpaid balances per payout address (in bumps).
-    private var balances: [String: Int64] = [:]
+    private let logger: Logger
 
-    /// Total paid out per address (in bumps).
-    private var totalPaid: [String: Int64] = [:]
-
-    /// Payout history.
-    private var payouts: [PayoutRecord] = []
-
-    /// Path to persist balances.
-    private let dataPath: String?
-
-    public init(poolFee: Double, windowMultiple: Double, dataPath: String? = nil) {
+    public init(poolFee: Double, windowMultiple: Double, db: PoolDatabase, logger: Logger) {
         self.poolFee = poolFee
         self.windowSize = 1000.0 * windowMultiple
-        self.dataPath = dataPath
-        if let path = dataPath {
-            loadState(from: path)
-        }
+        self.db = db
+        self.logger = logger
     }
 
     /// Update the PPLNS window size based on current network difficulty.
@@ -60,72 +49,60 @@ public final class ShareLog: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Record a found block: calculate PPLNS payouts and credit balances.
-    /// `blockReward` is in bumps (1 FBC = 1,000,000 bumps).
+    /// Record a found block: snapshot PPLNS shares and save to DB.
+    /// Rewards are NOT credited here — MaturityChecker credits them when mature.
     public func recordBlock(height: Int, hash: String, blockReward: Int64) {
         lock.lock()
         defer { lock.unlock() }
 
-        let block = FoundBlock(
-            height: height,
-            hash: hash,
-            time: Date(),
-            totalShares: shares.count,
-            totalDifficulty: shares.reduce(0) { $0 + $1.difficulty },
-            reward: blockReward
-        )
-        blocks.append(block)
-        if blocks.count > 1000 {
-            blocks.removeFirst(blocks.count - 1000)
+        // Already recorded (e.g. duplicate submission)?
+        guard !db.isBlockRecorded(height: height) else { return }
+
+        // Save block as immature
+        db.insertBlock(height: height, hash: hash, reward: blockReward, foundAt: Date())
+
+        // Snapshot current PPLNS window
+        if shares.isEmpty {
+            logger.warning("Block \(height) found but PPLNS window is empty — reward will be uncredited", source: "ShareLog")
+            return
         }
 
-        // PPLNS payout calculation
-        guard !shares.isEmpty else { return }
         let netReward = Int64(Double(blockReward) * (1.0 - poolFee))
         let totalDiff = shares.reduce(0.0) { $0 + $1.difficulty }
         guard totalDiff > 0 else { return }
 
+        var snapshot: [(address: String, difficulty: Double, fraction: Double, credit: Int64)] = []
+        // Aggregate by address
+        var addrDiff: [String: Double] = [:]
         for share in shares {
-            let fraction = share.difficulty / totalDiff
-            let amount = Int64(Double(netReward) * fraction)
-            if amount > 0 {
-                balances[share.address, default: 0] += amount
+            addrDiff[share.address, default: 0] += share.difficulty
+        }
+        for (addr, diff) in addrDiff {
+            let fraction = diff / totalDiff
+            let credit = Int64(Double(netReward) * fraction)
+            if credit > 0 {
+                snapshot.append((addr, diff, fraction, credit))
             }
         }
 
-        saveState()
+        db.insertBlockShares(blockHeight: height, shares: snapshot)
+        logger.info("Block \(height) recorded (immature) — \(snapshot.count) miners in PPLNS snapshot", source: "ShareLog")
     }
 
     /// Record a completed payout.
     public func recordPayout(address: String, amount: Int64, txid: String) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        balances[address, default: 0] -= amount
-        if balances[address, default: 0] <= 0 {
-            balances.removeValue(forKey: address)
-        }
-
-        totalPaid[address, default: 0] += amount
-
-        payouts.append(PayoutRecord(
-            address: address,
-            amount: amount,
-            txid: txid,
-            time: Date()
-        ))
-        if payouts.count > 10000 {
-            payouts.removeFirst(payouts.count - 10000)
-        }
-
-        saveState()
+        db.debitBalance(address: address, amount: amount)
+        db.insertPayout(txid: txid, address: address, amount: amount)
     }
 
     /// Get addresses with balances above the given threshold (in bumps).
     public func pendingPayouts(minBalance: Int64) -> [String: Int64] {
-        lock.lock()
-        defer { lock.unlock() }
-        return balances.filter { $0.value >= minBalance }
+        let pending = db.getPendingPayouts(minBalance: minBalance)
+        var result: [String: Int64] = [:]
+        for (addr, amount) in pending {
+            result[addr] = amount
+        }
+        return result
     }
 
     // MARK: - Stats
@@ -146,22 +123,20 @@ public final class ShareLog: @unchecked Sendable {
         )
     }
 
-    public var foundBlocks: [FoundBlock] {
-        lock.lock()
-        defer { lock.unlock() }
-        return blocks
+    public var foundBlocks: [PoolDatabase.BlockRecord] {
+        db.getAllBlocks()
     }
 
-    public var minerBalances: [String: Int64] {
-        lock.lock()
-        defer { lock.unlock() }
-        return balances
+    public var blockCount: Int {
+        db.getBlockCount()
     }
 
-    public var recentPayouts: [PayoutRecord] {
-        lock.lock()
-        defer { lock.unlock() }
-        return Array(payouts.suffix(100))
+    public var minerBalances: [(address: String, balance: Int64, totalEarned: Int64, totalPaid: Int64)] {
+        db.getAllBalances()
+    }
+
+    public var recentPayouts: [PoolDatabase.PayoutRecord] {
+        db.getRecentPayouts()
     }
 
     // MARK: - Private
@@ -171,78 +146,6 @@ public final class ShareLog: @unchecked Sendable {
         while totalDiff > windowSize && shares.count > 1 {
             totalDiff -= shares.first!.difficulty
             shares.removeFirst()
-        }
-    }
-
-    // MARK: - Persistence
-
-    /// Atomic save: write to .tmp, fsync, rename over the real file.
-    private func saveState() {
-        guard let path = dataPath else { return }
-        let state: [String: Any] = [
-            "balances": balances.mapValues { NSNumber(value: $0) },
-            "total_paid": totalPaid.mapValues { NSNumber(value: $0) },
-            "blocks_found": blocks.count,
-            "payouts": payouts.suffix(1000).map { p -> [String: Any] in
-                ["address": p.address, "amount": p.amount, "txid": p.txid,
-                 "time": Int(p.time.timeIntervalSince1970)]
-            },
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: state) else { return }
-
-        let tmpPath = path + ".tmp"
-        let backupPath = path + ".bak"
-        do {
-            try data.write(to: URL(fileURLWithPath: tmpPath), options: .atomic)
-            // Keep one backup of the previous state
-            let fm = FileManager.default
-            if fm.fileExists(atPath: path) {
-                try? fm.removeItem(atPath: backupPath)
-                try? fm.copyItem(atPath: path, toPath: backupPath)
-            }
-            try fm.moveItem(atPath: tmpPath, toPath: path)
-        } catch {
-            // Atomic write failed — leave previous state intact
-            try? FileManager.default.removeItem(atPath: tmpPath)
-        }
-    }
-
-    private func loadState(from path: String) {
-        // Try primary, fall back to backup
-        let data: Data
-        if let d = try? Data(contentsOf: URL(fileURLWithPath: path)) {
-            data = d
-        } else if let d = try? Data(contentsOf: URL(fileURLWithPath: path + ".bak")) {
-            data = d
-        } else {
-            return
-        }
-
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return
-        }
-
-        if let bals = json["balances"] as? [String: NSNumber] {
-            for (addr, amount) in bals {
-                balances[addr] = amount.int64Value
-            }
-        }
-        if let paid = json["total_paid"] as? [String: NSNumber] {
-            for (addr, amount) in paid {
-                totalPaid[addr] = amount.int64Value
-            }
-        }
-        if let payoutList = json["payouts"] as? [[String: Any]] {
-            for p in payoutList {
-                guard let addr = p["address"] as? String,
-                      let amount = (p["amount"] as? NSNumber)?.int64Value,
-                      let txid = p["txid"] as? String,
-                      let time = p["time"] as? Int else { continue }
-                payouts.append(PayoutRecord(
-                    address: addr, amount: amount, txid: txid,
-                    time: Date(timeIntervalSince1970: Double(time))
-                ))
-            }
         }
     }
 }
@@ -260,20 +163,4 @@ public struct ShareStats: Sendable {
     public let windowDifficulty: Double
     public let windowSize: Double
     public let addressShareCounts: [String: Int]
-}
-
-public struct FoundBlock: Sendable {
-    public let height: Int
-    public let hash: String
-    public let time: Date
-    public let totalShares: Int
-    public let totalDifficulty: Double
-    public let reward: Int64
-}
-
-public struct PayoutRecord: Sendable {
-    public let address: String
-    public let amount: Int64
-    public let txid: String
-    public let time: Date
 }

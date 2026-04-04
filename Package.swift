@@ -13,6 +13,15 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
     ],
     targets: [
+        .systemLibrary(
+            name: "CSQLite3",
+            path: "Sources/CSQLite3",
+            pkgConfig: "sqlite3",
+            providers: [
+                .apt(["libsqlite3-dev"]),
+            ]
+        ),
+
         .target(
             name: "CBalloon",
             dependencies: [],
@@ -28,6 +37,7 @@ let package = Package(
         .executableTarget(
             name: "pool",
             dependencies: [
+                "CSQLite3",
                 .product(name: "Base", package: "fbd"),
                 .product(name: "ExtCrypto", package: "fbd"),
                 .product(name: "Protocol", package: "fbd"),

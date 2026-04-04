@@ -1,4 +1,5 @@
 import Base
+import Consensus
 import Foundation
 import Logging
 
@@ -26,7 +27,20 @@ public final class PoolServer: Sendable {
         // Create data directory
         let dataDir = NSString(string: config.dataDir).expandingTildeInPath
         try FileManager.default.createDirectory(atPath: dataDir, withIntermediateDirectories: true)
-        let statePath = dataDir + "/pool-state.json"
+
+        // Open database
+        let dbPath = dataDir + "/pool.db"
+        let db = try PoolDatabase(path: dbPath, logger: logger)
+
+        // Migrate from JSON if database is empty and JSON exists
+        let jsonPath = dataDir + "/pool-state.json"
+        if db.isEmpty() && FileManager.default.fileExists(atPath: jsonPath) {
+            logger.info("Migrating from pool-state.json to SQLite...", source: "Pool")
+            db.importFromJSON(path: jsonPath)
+            let migratedPath = jsonPath + ".migrated"
+            try? FileManager.default.moveItem(atPath: jsonPath, toPath: migratedPath)
+            logger.info("Migration complete — JSON renamed to .migrated", source: "Pool")
+        }
 
         let rpc = NodeRPC(url: config.nodeURL, apiKey: config.nodeAPIKey)
 
@@ -45,7 +59,8 @@ public final class PoolServer: Sendable {
         let shareLog = ShareLog(
             poolFee: config.poolFee,
             windowMultiple: config.pplnsWindowMultiple,
-            dataPath: statePath
+            db: db,
+            logger: logger
         )
 
         let stratum = StratumServer(
@@ -54,6 +69,16 @@ public final class PoolServer: Sendable {
             shareLog: shareLog,
             logger: logger
         )
+
+        // Start maturity checker
+        let params = ConsensusParams.params(for: config.network)
+        let maturityChecker = MaturityChecker(
+            rpc: rpc,
+            db: db,
+            coinbaseMaturity: params.coinbaseMaturity,
+            logger: logger
+        )
+        maturityChecker.start()
 
         // Start payout manager
         let payoutManager = PayoutManager(
@@ -90,6 +115,7 @@ public final class PoolServer: Sendable {
         }
 
         logger.info("Shutting down...", source: "Pool")
+        maturityChecker.stop()
         payoutManager.stop()
         api?.shutdown()
         stratum.shutdown()

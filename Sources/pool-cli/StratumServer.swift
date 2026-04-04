@@ -451,8 +451,7 @@ public final class StratumServer: @unchecked Sendable {
         // Check if share also meets network target → block!
         let networkTarget = Target256.fromCompact(job.bits)
         if hashTarget <= networkTarget {
-            worker.blocks += 1
-            submitBlock(header: header, proof: proof, job: job)
+            submitBlock(header: header, proof: proof, job: job, worker: worker)
         }
     }
 
@@ -528,10 +527,9 @@ public final class StratumServer: @unchecked Sendable {
 
     // MARK: - Block Submission
 
-    private func submitBlock(header: BlockHeader, proof: BalloonProof, job: PoolJob) {
+    private func submitBlock(header: BlockHeader, proof: BalloonProof, job: PoolJob, worker: PoolWorker) {
         Task {
             do {
-                // Deserialize the coinbase and transactions from raw bytes
                 var cbReader = BufferReader(job.coinbaseData)
                 let coinbase = try Transaction.read(from: &cbReader)
 
@@ -544,19 +542,20 @@ public final class StratumServer: @unchecked Sendable {
 
                 let block = Block(header: header, transactions: txs, balloonProof: proof)
 
-                // Serialize to hex
                 var writer = BufferWriter()
                 block.write(to: &writer)
                 let hex = HexEncoding.encode(writer.data)
 
                 let result = try await rpc.submitBlock(hex: hex)
 
+                // Only increment worker block count after successful node acceptance
+                worker.blocks += 1
+
                 logger.info("Block \(result.height) found!", metadata: [
                     "hash": "\(result.hash)",
                     "height": "\(result.height)",
                 ], source: "Pool")
 
-                // Calculate block reward from coinbase outputs
                 let reward = Int64(coinbase.outputs.reduce(UInt64(0)) { $0 + $1.value })
                 shareLog.recordBlock(height: result.height, hash: result.hash, blockReward: reward)
                 onBlockFound?(result.height, result.hash)

@@ -83,7 +83,7 @@ public final class PoolAPI: @unchecked Sendable {
     private func statsJSON() -> String {
         let workers = stratum.workerSnapshots
         let shareStats = shareLog.stats
-        let blocks = shareLog.foundBlocks
+        let blockCount = shareLog.blockCount
         let totalHashrate = workers.reduce(0.0) { $0 + ($1.hashrate > 0 ? $1.hashrate : 0) }
         let uptime = Int(Date().timeIntervalSince(startTime))
         let fee = shareLog.feePercent
@@ -91,7 +91,7 @@ public final class PoolAPI: @unchecked Sendable {
         return """
         {"workers":\(workers.count),\
         "hashrate":\(totalHashrate),\
-        "blocks_found":\(blocks.count),\
+        "blocks_found":\(blockCount),\
         "shares_in_window":\(shareStats.windowShares),\
         "window_difficulty":\(shareStats.windowDifficulty),\
         "fee":\(fee),\
@@ -117,20 +117,26 @@ public final class PoolAPI: @unchecked Sendable {
 
     private func blocksJSON() -> String {
         let blocks = shareLog.foundBlocks
-        let entries = blocks.suffix(100).map { b in
+        let entries = blocks.map { b in
             "{\"height\":\(b.height)," +
             "\"hash\":\"\(b.hash)\"," +
-            "\"time\":\(Int(b.time.timeIntervalSince1970))," +
+            "\"time\":\(Int(b.foundAt.timeIntervalSince1970))," +
             "\"reward\":\(b.reward)," +
-            "\"shares\":\(b.totalShares)}"
+            "\"confirmations\":\(b.confirmations)," +
+            "\"status\":\"\(b.status)\"," +
+            "\"credited\":\(b.credited)}"
         }
         return "[\(entries.joined(separator: ","))]"
     }
 
     private func balancesJSON() -> String {
         let bals = shareLog.minerBalances
-        let entries = bals.map { (addr, bumps) in
-            "{\"address\":\"\(addr)\",\"balance\":\(bumps),\"fbc\":\(String(format: "%.6f", Double(bumps) / 1_000_000.0))}"
+        let entries = bals.map { b in
+            "{\"address\":\"\(b.address)\"," +
+            "\"balance\":\(b.balance)," +
+            "\"fbc\":\(String(format: "%.6f", Double(b.balance) / 1_000_000.0))," +
+            "\"total_earned\":\(b.totalEarned)," +
+            "\"total_paid\":\(b.totalPaid)}"
         }
         return "[\(entries.joined(separator: ","))]"
     }
@@ -138,7 +144,11 @@ public final class PoolAPI: @unchecked Sendable {
     private func payoutsJSON() -> String {
         let payouts = shareLog.recentPayouts
         let entries = payouts.map { p in
-            "{\"address\":\"\(p.address)\",\"amount\":\(p.amount),\"txid\":\"\(p.txid)\",\"time\":\(Int(p.time.timeIntervalSince1970))}"
+            "{\"address\":\"\(p.address)\"," +
+            "\"amount\":\(p.amount)," +
+            "\"txid\":\"\(p.txid)\"," +
+            "\"status\":\"\(p.status)\"," +
+            "\"time\":\(Int(p.createdAt.timeIntervalSince1970))}"
         }
         return "[\(entries.joined(separator: ","))]"
     }

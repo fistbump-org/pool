@@ -64,6 +64,18 @@ public final class NodeRPC: Sendable {
         return txid
     }
 
+    /// Get block info by height (for maturity checking).
+    /// Returns hash and confirmation count.
+    public func getBlock(height: Int) async throws -> (hash: String, confirmations: Int) {
+        let result = try await call(method: "getblock", params: [height])
+        guard let dict = result as? [String: Any],
+              let hash = dict["hash"] as? String else {
+            throw PoolError.rpcError("invalid getblock response")
+        }
+        let confirmations = dict["confirmations"] as? Int ?? (dict["depth"] as? Int ?? 0)
+        return (hash, confirmations)
+    }
+
     /// Get basic blockchain info.
     public func getBlockchainInfo() async throws -> [String: Any] {
         let result = try await call(method: "getblockchaininfo", params: [])
