@@ -48,6 +48,25 @@ final class MiningEngine: @unchecked Sendable {
         self.bufferPool = BufferPool(slots: ConsensusParams.params(for: network).balloonSlots, maxPooled: self.threads)
     }
 
+    /// Update the share target when pool changes difficulty mid-job.
+    func updateDifficulty(_ diff: Double) {
+        let newTarget = targetForDifficulty(diff)
+        lock.lock()
+        if var job = preparedJob {
+            job = PreparedJob(
+                job: job.job, password: job.password,
+                prevBlock: job.prevBlock, merkleRoot: job.merkleRoot,
+                witnessRoot: job.witnessRoot, treeRoot: job.treeRoot,
+                reservedRoot: job.reservedRoot,
+                shareTarget: newTarget, networkTarget: job.networkTarget,
+                extraNonce1: job.extraNonce1, en2Size: job.en2Size
+            )
+            preparedJob = job
+            jobGeneration &+= 1
+        }
+        lock.unlock()
+    }
+
     /// Start or update mining on a job.
     ///
     /// - `clean=true`: new block — hard restart all threads immediately.

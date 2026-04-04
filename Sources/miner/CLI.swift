@@ -106,8 +106,9 @@ struct MinerCLI: AsyncParsableCommand {
             engine.mine(job: job, clean: clean)
         }
 
-        client.onNewDifficulty = { [logger] diff in
+        client.onNewDifficulty = { [engine, logger] diff in
             logger.info("Difficulty set to \(diff)", source: "Miner")
+            engine.updateDifficulty(diff)
         }
 
         // Stats reporting timer
