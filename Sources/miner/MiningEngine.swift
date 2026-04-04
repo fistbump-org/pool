@@ -25,7 +25,8 @@ final class MiningEngine: @unchecked Sendable {
     private var rejected: Int = 0
 
     /// Semaphore limiting concurrent proof generations (each allocates 1 GB).
-    private let proofSemaphore = DispatchSemaphore(value: 2)
+    /// Value of 1 also serializes client.submit() calls (socket is not thread-safe).
+    private let proofSemaphore = DispatchSemaphore(value: 1)
     private var blocks: Int = 0
     private var totalHashes: UInt64 = 0
     private var miningStartTime: Date?
@@ -242,15 +243,19 @@ final class MiningEngine: @unchecked Sendable {
                     if hashTarget <= curShareTarget {
                         let isBlock = hashTarget <= curNetworkTarget
                         let capturedNonce = nonce
-                        // Generate proof and submit synchronously on this mining thread.
                         // Limit concurrent proof generations to cap memory (each allocates 1 GB).
-                        // If semaphore is full, skip this share — more will come.
-                        guard proofSemaphore.wait(timeout: .now()) == .success else {
-                            // Another thread is already generating proofs — skip
-                            let (next, overflow) = nonce.addingReportingOverflow(stride)
-                            if overflow { break }
-                            nonce = next
-                            continue
+                        // Also serializes client.submit() (socket is not thread-safe).
+                        // For block solutions: always wait (never lose a block).
+                        // For regular shares: skip if busy (more will come).
+                        if isBlock {
+                            proofSemaphore.wait()
+                        } else {
+                            guard proofSemaphore.wait(timeout: .now()) == .success else {
+                                let (next, overflow) = nonce.addingReportingOverflow(stride)
+                                if overflow { break }
+                                nonce = next
+                                continue
+                            }
                         }
                         defer { proofSemaphore.signal() }
 
