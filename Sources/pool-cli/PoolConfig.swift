@@ -73,6 +73,9 @@ public struct PoolConfig: Sendable {
     /// How often to check for pending payouts (seconds).
     public let payoutInterval: Double
 
+    /// Whether automatic payouts are enabled.
+    public let payoutsEnabled: Bool
+
     /// Data directory for persistent state (balances, payout history).
     public let dataDir: String
 
@@ -98,6 +101,7 @@ public struct PoolConfig: Sendable {
         walletName: String = "primary",
         minPayout: Int64 = 10_000_000,
         payoutInterval: Double = 300,
+        payoutsEnabled: Bool = true,
         dataDir: String = "~/.fbpool"
     ) {
         self.network = network
@@ -121,6 +125,7 @@ public struct PoolConfig: Sendable {
         self.walletName = walletName
         self.minPayout = minPayout
         self.payoutInterval = payoutInterval
+        self.payoutsEnabled = payoutsEnabled
         self.dataDir = dataDir
     }
 

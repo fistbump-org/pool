@@ -80,16 +80,22 @@ public final class PoolServer: Sendable {
         )
         maturityChecker.start()
 
-        // Start payout manager
-        let payoutManager = PayoutManager(
-            rpc: rpc,
-            shareLog: shareLog,
-            walletName: config.walletName,
-            minPayout: config.minPayout,
-            interval: config.payoutInterval,
-            logger: logger
-        )
-        payoutManager.start()
+        // Start payout manager (unless disabled)
+        var payoutManager: PayoutManager?
+        if config.payoutsEnabled {
+            let pm = PayoutManager(
+                rpc: rpc,
+                shareLog: shareLog,
+                walletName: config.walletName,
+                minPayout: config.minPayout,
+                interval: config.payoutInterval,
+                logger: logger
+            )
+            pm.start()
+            payoutManager = pm
+        } else {
+            logger.info("Automatic payouts disabled (--no-payouts)", source: "Pool")
+        }
 
         // Start Stratum
         try stratum.start()
@@ -116,7 +122,7 @@ public final class PoolServer: Sendable {
 
         logger.info("Shutting down...", source: "Pool")
         maturityChecker.stop()
-        payoutManager.stop()
+        payoutManager?.stop()
         api?.shutdown()
         stratum.shutdown()
     }

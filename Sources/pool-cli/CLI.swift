@@ -76,6 +76,9 @@ struct PoolCLI: AsyncParsableCommand {
     @Option(name: .long, help: "Payout check interval in seconds (default: 300).")
     var payoutInterval: Double?
 
+    @Flag(name: .long, help: "Disable automatic payouts (track balances only).")
+    var noPayouts: Bool = false
+
     @Option(name: .long, help: "Data directory for pool state.")
     var datadir: String?
 
@@ -115,6 +118,7 @@ struct PoolCLI: AsyncParsableCommand {
             walletName: wallet ?? "primary",
             minPayout: Int64((minPayout ?? 10.0) * 1_000_000),
             payoutInterval: payoutInterval ?? 300,
+            payoutsEnabled: !noPayouts,
             dataDir: datadir ?? "~/.fbpool"
         )
 
