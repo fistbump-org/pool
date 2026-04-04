@@ -1,3 +1,3 @@
 enum MinerVersion {
-    static let id = "c-validated"
+    static let id = "362c06b"
 }
