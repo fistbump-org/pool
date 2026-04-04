@@ -75,6 +75,15 @@ public final class NodeRPC: Sendable {
         return (hash, confirmations)
     }
 
+    /// Get protocol parameters (block time, coinbase maturity, etc.).
+    public func getProtocolParams() async throws -> [String: Any] {
+        let result = try await call(method: "getprotocolparams", params: [])
+        guard let dict = result as? [String: Any] else {
+            throw PoolError.rpcError("invalid getprotocolparams response")
+        }
+        return dict
+    }
+
     /// Get basic blockchain info.
     public func getBlockchainInfo() async throws -> [String: Any] {
         let result = try await call(method: "getblockchaininfo", params: [])

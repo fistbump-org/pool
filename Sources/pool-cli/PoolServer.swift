@@ -98,7 +98,7 @@ public final class PoolServer: Sendable {
         var api: PoolAPI?
         let apiPort = config.effectiveAPIPort
         if apiPort > 0 {
-            let poolAPI = PoolAPI(stratum: stratum, shareLog: shareLog, logger: logger)
+            let poolAPI = PoolAPI(stratum: stratum, shareLog: shareLog, rpc: rpc, logger: logger)
             do {
                 try poolAPI.start(host: config.apiHost, port: Int(apiPort))
                 api = poolAPI

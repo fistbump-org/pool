@@ -11,15 +11,21 @@ import Logging
 public final class PoolAPI: @unchecked Sendable {
     private let stratum: StratumServer
     private let shareLog: ShareLog
+    private let rpc: NodeRPC
     private let logger: Logger
     private let startTime: Date
     private var listener: TCPListener?
+    private var networkHashrate: Double = -1
+    private var blockTimeSeconds: Int = 0
+    private var networkTask: Task<Void, Never>?
 
-    public init(stratum: StratumServer, shareLog: ShareLog, logger: Logger) {
+    public init(stratum: StratumServer, shareLog: ShareLog, rpc: NodeRPC, logger: Logger) {
         self.stratum = stratum
         self.shareLog = shareLog
+        self.rpc = rpc
         self.logger = logger
         self.startTime = Date()
+        startNetworkPoller()
     }
 
     public func start(host: String, port: Int) throws {
@@ -34,8 +40,36 @@ public final class PoolAPI: @unchecked Sendable {
     }
 
     public func shutdown() {
+        networkTask?.cancel()
         listener?.shutdown()
         listener = nil
+    }
+
+    private func startNetworkPoller() {
+        networkTask = Task { [weak self] in
+            // Fetch immediately, then every 60 seconds
+            while !Task.isCancelled {
+                guard let self else { return }
+                do {
+                    let params = try await self.rpc.getProtocolParams()
+                    let blockTime = params["blockTimeSeconds"] as? Int ?? 120
+
+                    let info = try await self.rpc.getBlockchainInfo()
+                    let difficulty = (info["difficulty"] as? Double)
+                        ?? (info["difficulty"] as? Int).map(Double.init)
+                        ?? 0
+
+                    if difficulty > 0 && blockTime > 0 {
+                        // hashrate = difficulty * 2^32 / blockTimeSeconds
+                        self.networkHashrate = difficulty * 4294967296.0 / Double(blockTime)
+                        self.blockTimeSeconds = blockTime
+                    }
+                } catch {
+                    self.logger.debug("Network hashrate fetch failed: \(error)", source: "API")
+                }
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+            }
+        }
     }
 
     // MARK: - HTTP
@@ -91,6 +125,8 @@ public final class PoolAPI: @unchecked Sendable {
         return """
         {"workers":\(workers.count),\
         "hashrate":\(totalHashrate),\
+        "network_hashrate":\(networkHashrate),\
+        "block_time":\(blockTimeSeconds),\
         "blocks_found":\(blockCount),\
         "shares_in_window":\(shareStats.windowShares),\
         "window_difficulty":\(shareStats.windowDifficulty),\
