@@ -26,6 +26,7 @@ final class StratumClient: @unchecked Sendable {
 
     private var fd: Int32 = -1
     private let lock = NSLock()
+    private let ioLock = NSLock()  // Serializes all socket reads (submit vs processMessages)
     private var nextId: Int = 1
     private var readBuffer = [UInt8]()
 
@@ -147,6 +148,8 @@ final class StratumClient: @unchecked Sendable {
     }
 
     /// Submit a share to the pool.
+    /// Holds ioLock for the entire send+read to prevent processMessages from
+    /// stealing the response.
     func submit(
         jobId: String,
         extraNonce2: [UInt8],
@@ -160,6 +163,9 @@ final class StratumClient: @unchecked Sendable {
         let nonceHex = HexEncoding.encode(withUnsafeBytes(of: nonce.littleEndian) { Array($0) })
         let proofHex = HexEncoding.encode(proof)
 
+        ioLock.lock()
+        defer { ioLock.unlock() }
+
         send("{\"id\":\(id),\"method\":\"mining.submit\",\"params\":[\"\(username)\",\"\(jobId)\",\"\(en2Hex)\",\"\(timeHex)\",\"\(nonceHex)\",\"\(proofHex)\"]}\n")
 
         let response = try readResponse()
@@ -167,7 +173,6 @@ final class StratumClient: @unchecked Sendable {
             rejectReason = nil
             return true
         }
-        // Rejected or null result — capture error
         if let error = response["error"], !(error is NSNull) {
             rejectReason = "\(error)"
         } else {
@@ -181,14 +186,17 @@ final class StratumClient: @unchecked Sendable {
 
     /// Read and process incoming messages (notifications + responses).
     /// Call this in a loop from the read thread.
+    /// Yields to submit() when it holds the ioLock.
     func processMessages() throws {
+        ioLock.lock()
+        defer { ioLock.unlock() }
+
         let line = try readLine()
         guard !line.isEmpty,
               let json = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else {
             return
         }
 
-        // Check if it's a notification (id is null)
         if let method = json["method"] as? String {
             let params = json["params"] as? [Any] ?? []
             switch method {
