@@ -41,7 +41,8 @@ public final class PoolDatabase: @unchecked Sendable {
             found_at      INTEGER NOT NULL,
             confirmations INTEGER NOT NULL DEFAULT 0,
             status        TEXT    NOT NULL DEFAULT 'immature',
-            credited      INTEGER NOT NULL DEFAULT 0
+            credited      INTEGER NOT NULL DEFAULT 0,
+            found_by      TEXT    NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS block_shares (
@@ -81,17 +82,18 @@ public final class PoolDatabase: @unchecked Sendable {
 
     // MARK: - Block Operations
 
-    public func insertBlock(height: Int, hash: String, reward: Int64, foundAt: Date) {
+    public func insertBlock(height: Int, hash: String, reward: Int64, foundAt: Date, foundBy: String = "") {
         lock.lock(); defer { lock.unlock() }
         let ts = Int64(foundAt.timeIntervalSince1970)
         var stmt: OpaquePointer?
-        let sql = "INSERT OR IGNORE INTO blocks (height, hash, reward, found_at) VALUES (?, ?, ?, ?)"
+        let sql = "INSERT OR IGNORE INTO blocks (height, hash, reward, found_at, found_by) VALUES (?, ?, ?, ?, ?)"
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_int64(stmt, 1, Int64(height))
         sqlite3_bind_text(stmt, 2, (hash as NSString).utf8String, -1, nil)
         sqlite3_bind_int64(stmt, 3, reward)
         sqlite3_bind_int64(stmt, 4, ts)
+        sqlite3_bind_text(stmt, 5, (foundBy as NSString).utf8String, -1, nil)
         if sqlite3_step(stmt) != SQLITE_DONE {
             logger.error("Failed to insert block \(height)", source: "DB")
         }
@@ -130,6 +132,7 @@ public final class PoolDatabase: @unchecked Sendable {
         public let confirmations: Int
         public let status: String
         public let credited: Bool
+        public let foundBy: String
     }
 
     public func getImmatureBlocks() -> [BlockRecord] {
@@ -399,6 +402,7 @@ public final class PoolDatabase: @unchecked Sendable {
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return results }
         defer { sqlite3_finalize(stmt) }
         while sqlite3_step(stmt) == SQLITE_ROW {
+            let foundByPtr = sqlite3_column_text(stmt, 7)
             results.append(BlockRecord(
                 height: Int(sqlite3_column_int64(stmt, 0)),
                 hash: String(cString: sqlite3_column_text(stmt, 1)),
@@ -406,7 +410,8 @@ public final class PoolDatabase: @unchecked Sendable {
                 foundAt: Date(timeIntervalSince1970: Double(sqlite3_column_int64(stmt, 3))),
                 confirmations: Int(sqlite3_column_int64(stmt, 4)),
                 status: String(cString: sqlite3_column_text(stmt, 5)),
-                credited: sqlite3_column_int64(stmt, 6) != 0
+                credited: sqlite3_column_int64(stmt, 6) != 0,
+                foundBy: foundByPtr.map { String(cString: $0) } ?? ""
             ))
         }
         return results

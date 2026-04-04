@@ -557,7 +557,7 @@ public final class StratumServer: @unchecked Sendable {
                 ], source: "Pool")
 
                 let reward = Int64(coinbase.outputs.reduce(UInt64(0)) { $0 + $1.value })
-                shareLog.recordBlock(height: result.height, hash: result.hash, blockReward: reward)
+                shareLog.recordBlock(height: result.height, hash: result.hash, blockReward: reward, foundBy: worker.username ?? "unknown")
                 onBlockFound?(result.height, result.hash)
             } catch {
                 logger.error("Failed to submit block: \(error)", source: "Pool")

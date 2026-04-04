@@ -124,7 +124,8 @@ public final class PoolAPI: @unchecked Sendable {
             "\"reward\":\(b.reward)," +
             "\"confirmations\":\(b.confirmations)," +
             "\"status\":\"\(b.status)\"," +
-            "\"credited\":\(b.credited)}"
+            "\"credited\":\(b.credited)," +
+            "\"found_by\":\"\(b.foundBy)\"}"
         }
         return "[\(entries.joined(separator: ","))]"
     }

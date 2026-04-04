@@ -51,7 +51,7 @@ public final class ShareLog: @unchecked Sendable {
 
     /// Record a found block: snapshot PPLNS shares and save to DB.
     /// Rewards are NOT credited here — MaturityChecker credits them when mature.
-    public func recordBlock(height: Int, hash: String, blockReward: Int64) {
+    public func recordBlock(height: Int, hash: String, blockReward: Int64, foundBy: String = "") {
         lock.lock()
         defer { lock.unlock() }
 
@@ -59,7 +59,7 @@ public final class ShareLog: @unchecked Sendable {
         guard !db.isBlockRecorded(height: height) else { return }
 
         // Save block as immature
-        db.insertBlock(height: height, hash: hash, reward: blockReward, foundAt: Date())
+        db.insertBlock(height: height, hash: hash, reward: blockReward, foundAt: Date(), foundBy: foundBy)
 
         // Snapshot current PPLNS window
         if shares.isEmpty {
