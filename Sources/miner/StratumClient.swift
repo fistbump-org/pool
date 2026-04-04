@@ -11,6 +11,10 @@ private let _IPPROTO_TCP = Int32(IPPROTO_TCP)
 import Musl
 private let _SOCK_STREAM = Int32(SOCK_STREAM.rawValue)
 private let _IPPROTO_TCP = Int32(IPPROTO_TCP)
+#elseif canImport(Darwin)
+import Darwin
+private let _SOCK_STREAM = SOCK_STREAM
+private let _IPPROTO_TCP = IPPROTO_TCP
 #else
 private let _SOCK_STREAM = SOCK_STREAM
 private let _IPPROTO_TCP = IPPROTO_TCP
@@ -186,8 +190,22 @@ final class StratumClient: @unchecked Sendable {
 
     /// Read and process incoming messages (notifications + responses).
     /// Call this in a loop from the read thread.
-    /// Yields to submit() when it holds the ioLock.
+    /// Uses poll() to avoid blocking while holding the ioLock.
     func processMessages() throws {
+        #if canImport(Network)
+        if useTLS { try processMessagesTLS(); return }
+        #endif
+
+        // Check if data is waiting (200ms timeout) WITHOUT holding the lock.
+        // This prevents blocking the lock while recv() waits for data.
+        let hasBuffered = readBuffer.contains(UInt8(ascii: "\n"))
+        if !hasBuffered {
+            var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&pfd, 1, 200)
+            guard ready > 0 else { return }  // No data — yield to submit()
+        }
+
+        // Data is available — acquire lock and read
         ioLock.lock()
         defer { ioLock.unlock() }
 
@@ -209,6 +227,36 @@ final class StratumClient: @unchecked Sendable {
             }
         }
     }
+
+    #if canImport(Network)
+    /// TLS variant of processMessages — polls the read buffer.
+    private func processMessagesTLS() throws {
+        // For TLS, just use tryLock with a brief yield if busy
+        guard ioLock.try() else {
+            Thread.sleep(forTimeInterval: 0.1)
+            return
+        }
+        defer { ioLock.unlock() }
+
+        let line = try readLineTLS()
+        guard !line.isEmpty,
+              let json = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else {
+            return
+        }
+
+        if let method = json["method"] as? String {
+            let params = json["params"] as? [Any] ?? []
+            switch method {
+            case "mining.notify":
+                handleNotify(params)
+            case "mining.set_difficulty":
+                handleSetDifficulty(params)
+            default:
+                break
+            }
+        }
+    }
+    #endif
 
     // MARK: - Notification Handlers
 
