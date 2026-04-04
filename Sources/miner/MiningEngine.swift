@@ -143,6 +143,7 @@ final class MiningEngine: @unchecked Sendable {
 
         for tid in 0..<threadCount {
             let bufferPool = self.bufferPool
+            let proofSemaphore = self.proofSemaphore
 
             Thread.detachNewThread { [weak self] in
                 let buffer = bufferPool.checkout()
