@@ -23,6 +23,9 @@ final class MiningEngine: @unchecked Sendable {
     private var currentResult: MiningResult?
     private var accepted: Int = 0
     private var rejected: Int = 0
+
+    /// Semaphore limiting concurrent proof generations (each allocates 1 GB).
+    private let proofSemaphore = DispatchSemaphore(value: 2)
     private var blocks: Int = 0
     private var totalHashes: UInt64 = 0
     private var miningStartTime: Date?
@@ -218,8 +221,17 @@ final class MiningEngine: @unchecked Sendable {
                         let isBlock = hashTarget <= curNetworkTarget
                         let capturedNonce = nonce
                         // Generate proof and submit synchronously on this mining thread.
-                        // This blocks ~10s but only happens when a share is found.
-                        // Must be synchronous — StratumClient is not thread-safe.
+                        // Limit concurrent proof generations to cap memory (each allocates 1 GB).
+                        // If semaphore is full, skip this share — more will come.
+                        guard proofSemaphore.wait(timeout: .now()) == .success else {
+                            // Another thread is already generating proofs — skip
+                            let (next, overflow) = nonce.addingReportingOverflow(stride)
+                            if overflow { break }
+                            nonce = next
+                            continue
+                        }
+                        defer { proofSemaphore.signal() }
+
                         let header = BlockHeader(
                             nonce: capturedNonce,
                             time: curJob.job.time,
