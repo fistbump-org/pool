@@ -41,6 +41,9 @@ public final class PoolWorker: @unchecked Sendable {
     public var isSubscribed = false
     public var isAuthorized = false
 
+    // Miner-reported hashrate (via mining.hashrate)
+    public var reportedHashrate: Double = -1
+
     // Share stats
     public var accepted: Int = 0
     public var rejected: Int = 0

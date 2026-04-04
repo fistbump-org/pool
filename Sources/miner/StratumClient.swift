@@ -188,6 +188,16 @@ final class StratumClient: @unchecked Sendable {
     /// Reason for last rejected share (for logging).
     var rejectReason: String?
 
+    /// Report miner hashrate to the pool (for accurate API display).
+    func reportHashrate(_ hashrate: Double) throws {
+        let id = nextMessageId()
+        ioLock.lock()
+        defer { ioLock.unlock() }
+        send("{\"id\":\(id),\"method\":\"mining.hashrate\",\"params\":[\(hashrate)]}\n")
+        // Read response (don't care about result — best effort)
+        _ = try? readResponse()
+    }
+
     /// Read and process incoming messages (notifications + responses).
     /// Call this in a loop from the read thread.
     /// Uses poll() to avoid blocking while holding the ioLock.

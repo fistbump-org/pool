@@ -151,7 +151,8 @@ public final class StratumServer: @unchecked Sendable {
                 rejected: w.rejected,
                 stale: w.stale,
                 blocks: w.blocks,
-                hashrate: w.estimatedHashrate < 0 ? w.estimatedHashrate : w.estimatedHashrate * factor,
+                hashrate: w.reportedHashrate >= 0 ? w.reportedHashrate :
+                          (w.estimatedHashrate < 0 ? w.estimatedHashrate : w.estimatedHashrate * factor),
                 connectedAt: w.connectedAt,
                 lastShareTime: w.lastShareTime
             )
@@ -267,6 +268,11 @@ public final class StratumServer: @unchecked Sendable {
                 return
             }
             handleSubmit(worker: worker, id: id, params: params)
+        case "mining.hashrate":
+            if let hr = params.first as? Double ?? (params.first as? Int).map(Double.init) {
+                worker.reportedHashrate = hr
+            }
+            worker.sendResponse(id: id, result: .bool(true))
         default:
             worker.sendResponse(id: id, result: nil, error: .string("unknown method"))
         }

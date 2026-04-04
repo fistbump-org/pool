@@ -1,3 +1,3 @@
 enum MinerVersion {
-    static let id = "iofix2"
+    static let id = "hrfix"
 }

@@ -111,7 +111,7 @@ struct MinerCLI: AsyncParsableCommand {
             engine.updateDifficulty(diff)
         }
 
-        // Stats reporting timer
+        // Stats reporting timer + hashrate reporting to pool
         let statsTask = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 30_000_000_000) // 30s
@@ -122,6 +122,10 @@ struct MinerCLI: AsyncParsableCommand {
                     "blocks": "\(s.blocks)",
                     "hashrate": "\(String(format: "%.2f", s.hashrate)) H/s",
                 ], source: "Miner")
+                // Report actual hashrate to pool for accurate API display
+                if s.hashrate > 0 {
+                    try? client.reportHashrate(s.hashrate)
+                }
             }
         }
 
