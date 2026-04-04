@@ -11,6 +11,9 @@ public final class ShareLog: @unchecked Sendable {
     /// Pool fee fraction (e.g. 0.01 = 1%).
     private let poolFee: Double
 
+    /// Pool fee as a percentage for API display.
+    public var feePercent: Double { poolFee * 100.0 }
+
     /// PPLNS window size in total difficulty-weighted shares.
     private var windowSize: Double
 

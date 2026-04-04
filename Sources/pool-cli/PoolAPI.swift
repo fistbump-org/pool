@@ -86,6 +86,7 @@ public final class PoolAPI: @unchecked Sendable {
         let blocks = shareLog.foundBlocks
         let totalHashrate = workers.reduce(0.0) { $0 + $1.hashrate }
         let uptime = Int(Date().timeIntervalSince(startTime))
+        let fee = shareLog.feePercent
 
         return """
         {"workers":\(workers.count),\
@@ -93,6 +94,7 @@ public final class PoolAPI: @unchecked Sendable {
         "blocks_found":\(blocks.count),\
         "shares_in_window":\(shareStats.windowShares),\
         "window_difficulty":\(shareStats.windowDifficulty),\
+        "fee":\(fee),\
         "uptime":\(uptime)}
         """
     }
