@@ -135,6 +135,10 @@ public final class StratumServer: @unchecked Sendable {
         lock.lock()
         let all = Array(workers.values)
         lock.unlock()
+        // Correction factor: difficulty / avgTime gives shares/sec, but at diff=1
+        // only powLimit/2^256 of hashes are shares. Multiply by 2^256/powLimit
+        // to convert share rate to hash rate.
+        let factor = powLimitCorrectionFactor
         return all.map { w in
             WorkerSnapshot(
                 id: w.id,
@@ -147,11 +151,22 @@ public final class StratumServer: @unchecked Sendable {
                 rejected: w.rejected,
                 stale: w.stale,
                 blocks: w.blocks,
-                hashrate: w.estimatedHashrate,
+                hashrate: w.estimatedHashrate * factor,
                 connectedAt: w.connectedAt,
                 lastShareTime: w.lastShareTime
             )
         }
+    }
+
+    /// 2^256 / powLimit — converts share rate to hash rate.
+    private var powLimitCorrectionFactor: Double {
+        let limitBytes = params.powLimit.bigEndianBytes()
+        var limitValue = 0.0
+        for b in limitBytes { limitValue = limitValue * 256.0 + Double(b) }
+        guard limitValue > 0 else { return 1.0 }
+        // 2^256 as Double (approximate but sufficient for hashrate display)
+        let two256 = pow(2.0, 256.0)
+        return two256 / limitValue
     }
 
     // MARK: - Connection Handling
