@@ -35,14 +35,15 @@ public struct VarDiff: Sendable {
             return nil
         }
 
-        let ratio = avgTime / targetTime
+        // ratio > 1 = shares arriving faster than target, need higher difficulty
+        // ratio < 1 = shares arriving slower than target, need lower difficulty
+        let ratio = targetTime / avgTime
 
         // Within tolerance band — no adjustment needed
         if ratio >= (1.0 - variance) && ratio <= (1.0 + variance) {
             return nil
         }
 
-        // Adjust: if shares are too slow, decrease difficulty; if too fast, increase.
         // Clamp the adjustment factor to avoid wild swings.
         let factor = min(max(ratio, 0.25), 4.0)
         var newDiff = worker.difficulty * factor
