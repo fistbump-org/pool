@@ -151,7 +151,7 @@ public final class StratumServer: @unchecked Sendable {
                 rejected: w.rejected,
                 stale: w.stale,
                 blocks: w.blocks,
-                hashrate: w.estimatedHashrate * factor,
+                hashrate: w.estimatedHashrate < 0 ? w.estimatedHashrate : w.estimatedHashrate * factor,
                 connectedAt: w.connectedAt,
                 lastShareTime: w.lastShareTime
             )
