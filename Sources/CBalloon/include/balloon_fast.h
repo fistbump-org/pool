@@ -29,6 +29,13 @@ int balloon_hash_fast(
 /// Exposed for testing: single-block BLAKE2b-256.
 void balloon_blake2b256_test(const uint8_t *input, int input_len, uint8_t *output);
 
+/// Allocate a buffer with huge page support (Linux: MAP_HUGETLB → THP → malloc).
+/// Sets *used_hugepages to: 0 = malloc, 1 = mmap+THP, 2 = explicit huge pages.
+void *balloon_alloc_buffer(size_t size, int *used_hugepages);
+
+/// Free a buffer allocated with balloon_alloc_buffer.
+void balloon_free_buffer(void *ptr, size_t size, int used_hugepages);
+
 /// Simple BalloonHash WITHOUT prefetching (for correctness validation).
 int balloon_hash_simple(
     const uint8_t *password, int password_len,

@@ -1,11 +1,6 @@
 import Base
 import CBalloon
 import Foundation
-#if canImport(Glibc)
-import Glibc
-#elseif canImport(Musl)
-import Musl
-#endif
 
 // MARK: - Mining Buffer (pre-allocated, reusable across hashes)
 
@@ -14,20 +9,20 @@ final class MiningBuffer: @unchecked Sendable {
     let inp: UnsafeMutablePointer<UInt8>
     let prefetchInp: UnsafeMutablePointer<UInt8>
     let slots: Int
+    private let hugePageMode: Int32
     var cancelled: Int32 = 0
 
     init(slots: Int) {
         self.slots = slots
-        self.buf = .allocate(capacity: slots * 32)
+        var mode: Int32 = 0
+        self.buf = balloon_alloc_buffer(slots * 32, &mode).assumingMemoryBound(to: UInt8.self)
+        self.hugePageMode = mode
         self.inp = .allocate(capacity: 128)
         self.prefetchInp = .allocate(capacity: 128)
-        #if canImport(Glibc) || canImport(Musl)
-        madvise(buf, slots * 32, Int32(14))
-        #endif
     }
 
     deinit {
-        buf.deallocate()
+        balloon_free_buffer(buf, slots * 32, hugePageMode)
         inp.deallocate()
         prefetchInp.deallocate()
     }

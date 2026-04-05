@@ -1,13 +1,16 @@
 #include "balloon_fast.h"
 #include <string.h>
+#include <stdlib.h>
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
 
 // ---------------------------------------------------------------------------
 // Platform detection
 // ---------------------------------------------------------------------------
 
-// SSSE3 BLAKE2b disabled pending validation against test vectors.
-// The scalar C path with -O3 -march=native is used instead.
-#if 0 && defined(__x86_64__) && defined(__SSSE3__)
+// SSSE3 BLAKE2b for x86-64 (validated against balloon-test vectors).
+#if defined(__x86_64__) && defined(__SSSE3__)
     #include <tmmintrin.h>
     #define BLAKE2B_SSSE3 1
 #elif defined(__aarch64__) || defined(_M_ARM64)
@@ -188,58 +191,94 @@ static void blake2b256_single(const uint8_t *input, int len, uint8_t *output) {
 #define ROTR16(x) vorrq_u64(vshrq_n_u64(x, 16), vshlq_n_u64(x, 48))
 #define ROTR63(x) veorq_u64(vshrq_n_u64(x, 63), vaddq_u64(x, x))
 
-#define G1N(r1,r2,r3,r4,b) \
-    r1 = vaddq_u64(vaddq_u64(r1, b), r2); \
-    r4 = veorq_u64(r4, r1); r4 = ROTR32(r4); \
-    r3 = vaddq_u64(r3, r4); \
-    r2 = veorq_u64(r2, r3); r2 = ROTR24(r2);
+// Full 4-wide G macros: 8-register layout (matches SSSE3 structure).
+// Each row is split into low (lanes 0-1) and high (lanes 2-3) uint64x2_t pairs.
+#define G1N(r1l,r2l,r3l,r4l,r1h,r2h,r3h,r4h,b0,b1) \
+    r1l = vaddq_u64(vaddq_u64(r1l, b0), r2l); \
+    r1h = vaddq_u64(vaddq_u64(r1h, b1), r2h); \
+    r4l = veorq_u64(r4l, r1l); r4h = veorq_u64(r4h, r1h); \
+    r4l = ROTR32(r4l); r4h = ROTR32(r4h); \
+    r3l = vaddq_u64(r3l, r4l); r3h = vaddq_u64(r3h, r4h); \
+    r2l = veorq_u64(r2l, r3l); r2h = veorq_u64(r2h, r3h); \
+    r2l = ROTR24(r2l); r2h = ROTR24(r2h);
 
-#define G2N(r1,r2,r3,r4,b) \
-    r1 = vaddq_u64(vaddq_u64(r1, b), r2); \
-    r4 = veorq_u64(r4, r1); r4 = ROTR16(r4); \
-    r3 = vaddq_u64(r3, r4); \
-    r2 = veorq_u64(r2, r3); r2 = ROTR63(r2);
+#define G2N(r1l,r2l,r3l,r4l,r1h,r2h,r3h,r4h,b0,b1) \
+    r1l = vaddq_u64(vaddq_u64(r1l, b0), r2l); \
+    r1h = vaddq_u64(vaddq_u64(r1h, b1), r2h); \
+    r4l = veorq_u64(r4l, r1l); r4h = veorq_u64(r4h, r1h); \
+    r4l = ROTR16(r4l); r4h = ROTR16(r4h); \
+    r3l = vaddq_u64(r3l, r4l); r3h = vaddq_u64(r3h, r4h); \
+    r2l = veorq_u64(r2l, r3l); r2h = veorq_u64(r2h, r3h); \
+    r2l = ROTR63(r2l); r2h = ROTR63(r2h);
 
-#define DIAG_NEON(r1,r2,r3,r4) { \
-    uint64x2_t t = r2; r2 = vextq_u64(r2, r2, 1); (void)t; \
-    uint64x2_t t3 = r3; r3 = vextq_u64(r3, r3, 1); (void)t3; \
-    uint64x2_t t4 = r4; r4 = vextq_u64(r4, r4, 1); (void)t4; \
+#define DIAG_NEON(r1l,r2l,r3l,r4l,r1h,r2h,r3h,r4h) { \
+    uint64x2_t t0, t1; \
+    t0 = vextq_u64(r2l, r2h, 1); t1 = vextq_u64(r2h, r2l, 1); \
+    r2l = t0; r2h = t1; \
+    t0 = r3l; r3l = r3h; r3h = t0; \
+    t0 = vextq_u64(r4l, r4h, 1); t1 = vextq_u64(r4h, r4l, 1); \
+    r4l = t1; r4h = t0; \
 }
 
-// For NEON, use a simpler 2-register layout: each row = 1 uint64x2_t (2 lanes)
-// This processes 2 G functions in parallel per row pair.
-// Full 4-wide state: row1(v0,v1), row2(v4,v5), row3(v8,v9), row4(v12,v13) + similar for high half.
+#define UNDIAG_NEON(r1l,r2l,r3l,r4l,r1h,r2h,r3h,r4h) { \
+    uint64x2_t t0, t1; \
+    t0 = vextq_u64(r2h, r2l, 1); t1 = vextq_u64(r2l, r2h, 1); \
+    r2l = t0; r2h = t1; \
+    t0 = r3l; r3l = r3h; r3h = t0; \
+    t0 = vextq_u64(r4h, r4l, 1); t1 = vextq_u64(r4l, r4h, 1); \
+    r4l = t1; r4h = t0; \
+}
 
 static void blake2b256_single(const uint8_t *input, int len, uint8_t *output) {
     uint64_t m[16];
     memset(m, 0, sizeof(m));
     memcpy(m, input, (size_t)len < 128 ? (size_t)len : 128);
 
-    // State init
-    uint64_t h[4] = { iv[0] ^ 0x01010020ULL, iv[1], iv[2], iv[3] };
-    uint64_t v[16];
-    v[0]=h[0]; v[1]=h[1]; v[2]=h[2]; v[3]=h[3];
-    v[4]=iv[4]; v[5]=iv[5]; v[6]=iv[6]; v[7]=iv[7];
-    v[8]=iv[0]; v[9]=iv[1]; v[10]=iv[2]; v[11]=iv[3];
-    v[12]=iv[4]^(uint64_t)len; v[13]=iv[5]; v[14]=~iv[6]; v[15]=iv[7];
+    // State init: h = IV ^ param_block (digest=32, key=0, fanout=1, depth=1)
+    uint64x2_t row1l = vcombine_u64(vcreate_u64(iv[0] ^ 0x01010020ULL), vcreate_u64(iv[1]));
+    uint64x2_t row1h = vcombine_u64(vcreate_u64(iv[2]), vcreate_u64(iv[3]));
+    uint64x2_t row2l = vcombine_u64(vcreate_u64(iv[4]), vcreate_u64(iv[5]));
+    uint64x2_t row2h = vcombine_u64(vcreate_u64(iv[6]), vcreate_u64(iv[7]));
+    uint64x2_t row3l = vcombine_u64(vcreate_u64(iv[0]), vcreate_u64(iv[1]));
+    uint64x2_t row3h = vcombine_u64(vcreate_u64(iv[2]), vcreate_u64(iv[3]));
+    uint64x2_t row4l = vcombine_u64(vcreate_u64(iv[4] ^ (uint64_t)len), vcreate_u64(iv[5]));
+    uint64x2_t row4h = vcombine_u64(vcreate_u64(~iv[6]), vcreate_u64(iv[7]));
 
+    // Save initial state for finalization (only first 4 words needed for 256-bit)
+    uint64x2_t orig1l = row1l, orig1h = row1h;
+
+    // 12 rounds
     for (int r = 0; r < 12; r++) {
         const uint8_t *s = sigma + r * 16;
-        #define MIX(a,b,c,d,x,y) \
-            v[a]=v[a]+v[b]+x; v[d]^=v[a]; v[d]=(v[d]>>32)|(v[d]<<32); \
-            v[c]=v[c]+v[d]; v[b]^=v[c]; v[b]=(v[b]>>24)|(v[b]<<40); \
-            v[a]=v[a]+v[b]+y; v[d]^=v[a]; v[d]=(v[d]>>16)|(v[d]<<48); \
-            v[c]=v[c]+v[d]; v[b]^=v[c]; v[b]=(v[b]>>63)|(v[b]<<1);
-        MIX(0,4, 8,12,m[s[0]],m[s[1]]); MIX(1,5, 9,13,m[s[2]],m[s[3]]);
-        MIX(2,6,10,14,m[s[4]],m[s[5]]); MIX(3,7,11,15,m[s[6]],m[s[7]]);
-        MIX(0,5,10,15,m[s[8]],m[s[9]]); MIX(1,6,11,12,m[s[10]],m[s[11]]);
-        MIX(2,7, 8,13,m[s[12]],m[s[13]]); MIX(3,4, 9,14,m[s[14]],m[s[15]]);
-        #undef MIX
+        uint64x2_t b0, b1;
+
+        // Column step
+        b0 = vcombine_u64(vcreate_u64(m[s[0]]), vcreate_u64(m[s[2]]));
+        b1 = vcombine_u64(vcreate_u64(m[s[4]]), vcreate_u64(m[s[6]]));
+        G1N(row1l,row2l,row3l,row4l,row1h,row2h,row3h,row4h,b0,b1);
+        b0 = vcombine_u64(vcreate_u64(m[s[1]]), vcreate_u64(m[s[3]]));
+        b1 = vcombine_u64(vcreate_u64(m[s[5]]), vcreate_u64(m[s[7]]));
+        G2N(row1l,row2l,row3l,row4l,row1h,row2h,row3h,row4h,b0,b1);
+
+        DIAG_NEON(row1l,row2l,row3l,row4l,row1h,row2h,row3h,row4h);
+
+        // Diagonal step
+        b0 = vcombine_u64(vcreate_u64(m[s[8]]), vcreate_u64(m[s[10]]));
+        b1 = vcombine_u64(vcreate_u64(m[s[12]]), vcreate_u64(m[s[14]]));
+        G1N(row1l,row2l,row3l,row4l,row1h,row2h,row3h,row4h,b0,b1);
+        b0 = vcombine_u64(vcreate_u64(m[s[9]]), vcreate_u64(m[s[11]]));
+        b1 = vcombine_u64(vcreate_u64(m[s[13]]), vcreate_u64(m[s[15]]));
+        G2N(row1l,row2l,row3l,row4l,row1h,row2h,row3h,row4h,b0,b1);
+
+        UNDIAG_NEON(row1l,row2l,row3l,row4l,row1h,row2h,row3h,row4h);
     }
 
-    h[0] ^= v[0] ^ v[8];  h[1] ^= v[1] ^ v[9];
-    h[2] ^= v[2] ^ v[10]; h[3] ^= v[3] ^ v[11];
-    memcpy(output, h, 32);
+    // Finalize: h ^= v[0..3] ^ v[8..11] (only 256 bits needed)
+    row1l = veorq_u64(veorq_u64(orig1l, row1l), row3l);
+    row1h = veorq_u64(veorq_u64(orig1h, row1h), row3h);
+
+    vst1q_u8(output,      vreinterpretq_u8_u64(row1l));
+    vst1q_u8(output + 16, vreinterpretq_u8_u64(row1h));
 }
 
 // ---------------------------------------------------------------------------
@@ -333,40 +372,59 @@ int balloon_hash_fast(
         counter++;
     }
 
-    // Phase 2: Mix — identical to simple version but with prefetch hints.
-    // The prefetch is issued right after we learn the random index (step 2a),
-    // giving the step 2b setup (~20ns) plus any pipeline stalls as lead time.
-    // Additionally, we prefetch the NEXT slot's previous neighbor (sequential,
-    // but may still miss if evicted during the random access).
-    for (int round = 0; round < rounds; round++) {
-        for (int i = 0; i < slots; i++) {
-            if ((i & 0xFFFF) == 0 && cancelled && *cancelled) return -1;
-            int off = i * 32;
+    // Phase 2: Mix — pipelined prefetch.
+    // Pre-compute each slot's random index one iteration ahead using the
+    // separate prefetch_inp scratch buffer. This gives the prefetch 2+ full
+    // BLAKE2b calls of lead time (~100-200ns) to hide DRAM latency on the
+    // 512 MB random-access buffer, vs ~20ns with the naive approach.
+    {
+        // Seed the pipeline: compute first slot's random index ahead of time.
+        int next_idx = compute_random_idx(counter + 1, 0, 0, 0, slots, prefetch_inp);
+        __builtin_prefetch(buf + (size_t)next_idx * 32, 0, 0);
 
-            store_u64le(inp, counter);
-            copy32(buf + off, inp + 8);
-            int prev = (i == 0) ? slots - 1 : i - 1;
-            copy32(buf + prev * 32, inp + 40);
-            blake2b256_single(inp, 72, buf + off);
-            counter++;
+        for (int round = 0; round < rounds; round++) {
+            for (int i = 0; i < slots; i++) {
+                if ((i & 0xFFFF) == 0 && cancelled && *cancelled) return -1;
+                int off = i * 32;
 
-            for (int j = 0; j < delta; j++) {
-                store_u64le(inp, counter);
-                store_u64le(inp + 8,  (uint64_t)round);
-                store_u64le(inp + 16, (uint64_t)i);
-                store_u64le(inp + 24, (uint64_t)j);
-                uint8_t tmp[32];
-                blake2b256_single(inp, 32, tmp);
-                int idx = (int)(load_u64le(tmp) % (uint64_t)slots);
-
-                // Prefetch the random neighbor ASAP after learning the index.
-                __builtin_prefetch(buf + (size_t)idx * 32, 0, 0);
-
+                // Step 1: mix with previous neighbor (sequential — likely cached).
+                // During this BLAKE2b, the previously-issued prefetch loads data.
                 store_u64le(inp, counter);
                 copy32(buf + off, inp + 8);
-                copy32(buf + (size_t)idx * 32, inp + 40);
+                int prev = (i == 0) ? slots - 1 : i - 1;
+                copy32(buf + prev * 32, inp + 40);
                 blake2b256_single(inp, 72, buf + off);
                 counter++;
+
+                for (int j = 0; j < delta; j++) {
+                    // Step 2: use the pre-computed random index (should be warm).
+                    int idx = next_idx;
+
+                    // Step 3: pipeline — pre-compute the NEXT random index now,
+                    // before this slot's mix-random BLAKE2b. The prefetch gets
+                    // the mix-random call + next mix-previous call as lead time.
+                    if (j + 1 < delta) {
+                        // Next delta step within same slot
+                        next_idx = compute_random_idx(counter + 1, round, i, j + 1,
+                                                      slots, prefetch_inp);
+                    } else if (i + 1 < slots) {
+                        // First delta step of next slot
+                        next_idx = compute_random_idx(counter + 2, round, i + 1, 0,
+                                                      slots, prefetch_inp);
+                    } else if (round + 1 < rounds) {
+                        // First delta step of next round
+                        next_idx = compute_random_idx(counter + 2, round + 1, 0, 0,
+                                                      slots, prefetch_inp);
+                    }
+                    __builtin_prefetch(buf + (size_t)next_idx * 32, 0, 0);
+
+                    // Step 4: mix with random neighbor.
+                    store_u64le(inp, counter);
+                    copy32(buf + off, inp + 8);
+                    copy32(buf + (size_t)idx * 32, inp + 40);
+                    blake2b256_single(inp, 72, buf + off);
+                    counter++;
+                }
             }
         }
     }
@@ -380,6 +438,47 @@ int balloon_hash_fast(
 void balloon_blake2b256_test(const uint8_t *input, int input_len, uint8_t *output) {
     blake2b256_single(input, input_len, output);
 }
+
+// ---------------------------------------------------------------------------
+// Buffer allocation with huge page support
+// ---------------------------------------------------------------------------
+
+void *balloon_alloc_buffer(size_t size, int *used_hugepages) {
+    *used_hugepages = 0;
+#if defined(__linux__)
+    // Try explicit huge pages (requires sysctl vm.nr_hugepages configuration)
+    void *p = mmap(NULL, size, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | 0x40000 /*MAP_HUGETLB*/, -1, 0);
+    if (p != MAP_FAILED) {
+        *used_hugepages = 2; // explicit huge pages
+        return p;
+    }
+    // Fall back to regular pages with transparent huge page hint
+    p = mmap(NULL, size, PROT_READ | PROT_WRITE,
+             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p != MAP_FAILED) {
+        madvise(p, size, 14); // MADV_HUGEPAGE
+        *used_hugepages = 1; // mmap with THP
+        return p;
+    }
+#endif
+    // Fall back to standard allocation
+    return malloc(size);
+}
+
+void balloon_free_buffer(void *ptr, size_t size, int used_hugepages) {
+#if defined(__linux__)
+    if (used_hugepages > 0) {
+        munmap(ptr, size);
+        return;
+    }
+#endif
+    (void)size;
+    (void)used_hugepages;
+    free(ptr);
+}
+
+// ---------------------------------------------------------------------------
 
 // Simple BalloonHash — direct translation of the algorithm, no prefetch optimization.
 int balloon_hash_simple(

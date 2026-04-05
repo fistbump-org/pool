@@ -21,6 +21,7 @@ final class MiningEngine: @unchecked Sendable {
 
     private let lock = NSLock()
     private var currentResult: MiningResult?
+    private var activeBuffers: [MiningBuffer] = []
     private var accepted: Int = 0
     private var rejected: Int = 0
 
@@ -44,7 +45,7 @@ final class MiningEngine: @unchecked Sendable {
     init(client: StratumClient, network: NetworkType, threads: Int, logger: Logger) {
         self.client = client
         self.params = ConsensusParams.params(for: network)
-        self.threads = threads > 0 ? threads : max(1, ProcessInfo.processInfo.activeProcessorCount - 1)
+        self.threads = threads > 0 ? threads : max(1, ProcessInfo.processInfo.activeProcessorCount)
         self.logger = logger
         // Cap pooled buffers low — each is 512 MB. Threads allocate on demand if pool is empty.
         // The allocation cost is negligible vs the 10s BalloonHash computation.
@@ -130,6 +131,11 @@ final class MiningEngine: @unchecked Sendable {
         jobGeneration &+= 1
         let needsRestart = clean || currentResult == nil
         if needsRestart {
+            // Signal all in-flight C BalloonHash calls to bail out immediately
+            // (~40ms worst case via the periodic cancelled flag check in the C loop).
+            for buf in activeBuffers {
+                buf.cancelled = 1
+            }
             currentResult?.stop()
         }
         let result: MiningResult
@@ -169,7 +175,15 @@ final class MiningEngine: @unchecked Sendable {
 
             Thread.detachNewThread { [weak self] in
                 let buffer = bufferPool.checkout()
-                defer { bufferPool.checkin(buffer) }
+                self?.lock.lock()
+                self?.activeBuffers.append(buffer)
+                self?.lock.unlock()
+                defer {
+                    self?.lock.lock()
+                    self?.activeBuffers.removeAll { $0 === buffer }
+                    self?.lock.unlock()
+                    bufferPool.checkin(buffer)
+                }
 
                 // Build randomized extraNonce2
                 var extraNonce2 = [UInt8](repeating: 0, count: prepared.en2Size)
@@ -318,6 +332,9 @@ final class MiningEngine: @unchecked Sendable {
     /// Stop all mining threads.
     func stop() {
         lock.lock()
+        for buf in activeBuffers {
+            buf.cancelled = 1
+        }
         currentResult?.stop()
         lock.unlock()
     }

@@ -30,7 +30,7 @@ let package = Package(
             publicHeadersPath: "include",
             cSettings: [
                 .unsafeFlags(["-O3", "-march=native"], .when(platforms: [.linux])),
-                .unsafeFlags(["-O3"], .when(platforms: [.macOS])),
+                .unsafeFlags(["-O3", "-mcpu=native"], .when(platforms: [.macOS])),
             ]
         ),
 
