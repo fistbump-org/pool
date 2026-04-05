@@ -133,15 +133,17 @@ struct MinerCLI: AsyncParsableCommand {
             }
         }
 
+        // Ensure cleanup runs even when processMessages() throws on disconnect
+        defer {
+            statsTask.cancel()
+            engine.stop()
+            client.disconnect()
+        }
+
         // Read loop — process notifications from pool
         while !Task.isCancelled {
             try client.processMessages()
         }
-
-        statsTask.cancel()
-        await statsTask.value  // Wait for stats timer to actually stop
-        engine.stop()
-        client.disconnect()
     }
 
     private func parseLogLevel(_ string: String) -> Logger.Level {
