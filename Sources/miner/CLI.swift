@@ -139,6 +139,7 @@ struct MinerCLI: AsyncParsableCommand {
         }
 
         statsTask.cancel()
+        await statsTask.value  // Wait for stats timer to actually stop
         engine.stop()
         client.disconnect()
     }

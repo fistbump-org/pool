@@ -273,6 +273,11 @@ final class MiningEngine: @unchecked Sendable {
                         }
                         defer { proofSemaphore.signal() }
 
+                        // Bail out if engine was stopped while we waited for the
+                        // semaphore — submitting now would send a stale job ID
+                        // over a reconnected socket.
+                        guard !result.shouldStop else { break }
+
                         let header = BlockHeader(
                             nonce: capturedNonce,
                             time: curJob.job.time,
