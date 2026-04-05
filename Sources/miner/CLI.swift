@@ -1,5 +1,6 @@
 import ArgumentParser
 import Base
+import CBalloon
 import Foundation
 import Logging
 
@@ -53,6 +54,9 @@ struct MinerCLI: AsyncParsableCommand {
             "network": "\(networkType.rawValue)",
             "threads": "\(threads ?? (ProcessInfo.processInfo.activeProcessorCount - 1))",
         ], source: "Miner")
+
+        // Self-test: verify C fast path matches C simple path
+        selfTestBalloonHash(logger: logger)
 
         // Connect to pool
         let client = StratumClient(
@@ -150,5 +154,55 @@ struct MinerCLI: AsyncParsableCommand {
         case "critical": return .critical
         default:         return .info
         }
+    }
+
+    /// Compare balloon_hash_fast vs balloon_hash_simple at multiple slot counts.
+    /// Exits with a fatal error if they diverge.
+    private func selfTestBalloonHash(logger: Logger) {
+        for testSlots in [64, 1024, 65536] {
+            let rounds: Int32 = 1
+            let delta: Int32 = 1
+            let password: [UInt8] = Array(repeating: 0xAB, count: 32)
+            let salt: [UInt8] = Array(repeating: 0xCD, count: 28)
+
+            let bufFast = UnsafeMutablePointer<UInt8>.allocate(capacity: testSlots * 32)
+            let bufSimple = UnsafeMutablePointer<UInt8>.allocate(capacity: testSlots * 32)
+            let inp = UnsafeMutablePointer<UInt8>.allocate(capacity: 128)
+            let prefetchInp = UnsafeMutablePointer<UInt8>.allocate(capacity: 128)
+            var outFast = [UInt8](repeating: 0, count: 32)
+            var outSimple = [UInt8](repeating: 0, count: 32)
+            defer { bufFast.deallocate(); bufSimple.deallocate(); inp.deallocate(); prefetchInp.deallocate() }
+
+            password.withUnsafeBufferPointer { pw in
+                salt.withUnsafeBufferPointer { sl in
+                    outFast.withUnsafeMutableBufferPointer { of in
+                        balloon_hash_fast(
+                            pw.baseAddress!, Int32(pw.count),
+                            sl.baseAddress!, Int32(sl.count),
+                            bufFast, inp, prefetchInp,
+                            Int32(testSlots), rounds, delta,
+                            of.baseAddress!, nil
+                        )
+                    }
+                    outSimple.withUnsafeMutableBufferPointer { os in
+                        balloon_hash_simple(
+                            pw.baseAddress!, Int32(pw.count),
+                            sl.baseAddress!, Int32(sl.count),
+                            bufSimple, inp,
+                            Int32(testSlots), rounds, delta,
+                            os.baseAddress!, nil
+                        )
+                    }
+                }
+            }
+
+            if outFast != outSimple {
+                logger.error("BalloonHash self-test FAILED at \(testSlots) slots!", source: "Miner")
+                logger.error("  fast:   \(HexEncoding.encode(outFast))", source: "Miner")
+                logger.error("  simple: \(HexEncoding.encode(outSimple))", source: "Miner")
+                fatalError("BalloonHash fast path diverges from simple path — mining results will be invalid")
+            }
+        }
+        logger.info("BalloonHash self-test passed (fast == simple at 64/1K/64K slots)", source: "Miner")
     }
 }
