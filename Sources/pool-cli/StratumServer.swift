@@ -544,29 +544,28 @@ public final class StratumServer: @unchecked Sendable {
                 writer.writeBytes(proof.serialize())
                 let hex = HexEncoding.encode(writer.data)
 
-                // Pre-submit diagnostic: verify merkle root matches transactions
+                // Diagnostic: re-parse the FULL block hex exactly as the node will,
+                // and verify the merkle root from that parse.
                 do {
-                    var cbR = BufferReader(job.coinbaseData)
-                    let cb = try Transaction.read(from: &cbR)
-                    var txHashes = [cb.txHash()]
-                    for txData in job.transactionData {
-                        var txR = BufferReader(txData)
-                        let tx = try Transaction.read(from: &txR)
-                        txHashes.append(tx.txHash())
-                    }
-                    let computed = try MerkleTree.computeRoot(txHashes)
-                    if computed != header.merkleRoot {
-                        logger.error("PRE-SUBMIT MISMATCH", metadata: [
-                            "headerMerkle": "\(header.merkleRoot.hex)",
-                            "computedMerkle": "\(computed.hex)",
-                            "txCount": "\(txCount)",
-                            "storedTxDataCount": "\(job.transactionData.count)",
-                            "cbBytes": "\(job.coinbaseData.count)",
-                            "cbHash": "\(txHashes[0].hex)",
-                        ], source: "Pool")
-                    }
+                    let blockBytes = try HexEncoding.decode(hex)
+                    var reader = BufferReader(blockBytes)
+                    let parsedBlock = try Block.read(from: &reader)
+                    let leftover = reader.remaining
+                    let parsedHashes = parsedBlock.transactions.map { $0.txHash() }
+                    let parsedMerkle = try MerkleTree.computeRoot(parsedHashes)
+                    let matches = parsedMerkle == parsedBlock.header.merkleRoot
+                    logger.info("Block submit diag", metadata: [
+                        "hexLen": "\(hex.count)",
+                        "leftover": "\(leftover)",
+                        "headerMerkle": "\(parsedBlock.header.merkleRoot.hex.prefix(16))…",
+                        "computedMerkle": "\(parsedMerkle.hex.prefix(16))…",
+                        "match": "\(matches)",
+                        "txCount": "\(parsedBlock.transactions.count)",
+                        "height": "\(job.height)",
+                        "prevBlock": "\(parsedBlock.header.prevBlock.hex.prefix(16))…",
+                    ], source: "Pool")
                 } catch {
-                    logger.error("Pre-submit check failed: \(error)", source: "Pool")
+                    logger.error("Block parse diag failed: \(error)", source: "Pool")
                 }
 
                 let result = try await rpc.submitBlock(hex: hex)
