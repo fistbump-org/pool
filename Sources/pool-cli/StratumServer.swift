@@ -530,20 +530,18 @@ public final class StratumServer: @unchecked Sendable {
     private func submitBlock(header: BlockHeader, proof: BalloonProof, job: PoolJob, worker: PoolWorker) {
         Task {
             do {
-                var cbReader = BufferReader(job.coinbaseData)
-                let coinbase = try Transaction.read(from: &cbReader)
-
-                var txs = [coinbase]
-                for txData in job.transactionData {
-                    var txReader = BufferReader(txData)
-                    let tx = try Transaction.read(from: &txReader)
-                    txs.append(tx)
-                }
-
-                let block = Block(header: header, transactions: txs, balloonProof: proof)
-
+                // Serialize block directly from raw stored bytes to avoid any
+                // Transaction deserialize/re-serialize round-trip that could
+                // change the txHash and invalidate the merkle root.
+                let txCount = 1 + job.transactionData.count
                 var writer = BufferWriter()
-                block.write(to: &writer)
+                header.write(to: &writer)
+                writer.writeCompactSize(UInt64(txCount))
+                writer.writeBytes(job.coinbaseData)
+                for txData in job.transactionData {
+                    writer.writeBytes(txData)
+                }
+                writer.writeBytes(proof.serialize())
                 let hex = HexEncoding.encode(writer.data)
 
                 let result = try await rpc.submitBlock(hex: hex)
@@ -556,6 +554,9 @@ public final class StratumServer: @unchecked Sendable {
                     "height": "\(result.height)",
                 ], source: "Pool")
 
+                // Parse coinbase just for the reward calculation
+                var cbReader = BufferReader(job.coinbaseData)
+                let coinbase = try Transaction.read(from: &cbReader)
                 let reward = Int64(coinbase.outputs.reduce(UInt64(0)) { $0 + $1.value })
                 shareLog.recordBlock(height: result.height, hash: result.hash, blockReward: reward, foundBy: worker.username ?? "unknown")
                 onBlockFound?(result.height, result.hash)
