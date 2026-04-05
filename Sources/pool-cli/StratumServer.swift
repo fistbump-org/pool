@@ -544,6 +544,31 @@ public final class StratumServer: @unchecked Sendable {
                 writer.writeBytes(proof.serialize())
                 let hex = HexEncoding.encode(writer.data)
 
+                // Pre-submit diagnostic: verify merkle root matches transactions
+                do {
+                    var cbR = BufferReader(job.coinbaseData)
+                    let cb = try Transaction.read(from: &cbR)
+                    var txHashes = [cb.txHash()]
+                    for txData in job.transactionData {
+                        var txR = BufferReader(txData)
+                        let tx = try Transaction.read(from: &txR)
+                        txHashes.append(tx.txHash())
+                    }
+                    let computed = try MerkleTree.computeRoot(txHashes)
+                    if computed != header.merkleRoot {
+                        logger.error("PRE-SUBMIT MISMATCH", metadata: [
+                            "headerMerkle": "\(header.merkleRoot.hex)",
+                            "computedMerkle": "\(computed.hex)",
+                            "txCount": "\(txCount)",
+                            "storedTxDataCount": "\(job.transactionData.count)",
+                            "cbBytes": "\(job.coinbaseData.count)",
+                            "cbHash": "\(txHashes[0].hex)",
+                        ], source: "Pool")
+                    }
+                } catch {
+                    logger.error("Pre-submit check failed: \(error)", source: "Pool")
+                }
+
                 let result = try await rpc.submitBlock(hex: hex)
 
                 // Only increment worker block count after successful node acceptance
