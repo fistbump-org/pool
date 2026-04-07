@@ -70,11 +70,14 @@ public final class PoolServer: Sendable {
             logger: logger
         )
 
-        // Re-verify orphans against the chain. Buggy reorg handling could mark
-        // blocks as orphan that the chain still considers canonical. For each
-        // such block we flip status back to 'immature' so MaturityChecker
-        // re-mature/credit it on its next pass. Idempotent: real orphans stay.
-        await Self.reverifyOrphans(rpc: rpc, db: db, logger: logger)
+        // Re-verify pool DB against the chain. Buggy reorg handling could leave
+        // pool DB in a stale state in three different ways: (1) blocks marked
+        // orphan that the chain still has, (2) mature/credited blocks the
+        // chain has since reorged out, (3) payout txs the chain has since
+        // reorged out. Each pass corrects one. Idempotent across restarts.
+        await Self.reverifyChainState(
+            rpc: rpc, db: db, walletName: config.walletName, logger: logger
+        )
 
         // Start maturity checker
         let params = ConsensusParams.params(for: config.network)
@@ -133,39 +136,96 @@ public final class PoolServer: Sendable {
         stratum.shutdown()
     }
 
-    /// Re-verify orphan blocks against the chain. If the chain still reports
-    /// our exact stored hash at that height, the block was a false orphan
-    /// (e.g. from a reorg-handling bug) — reset it to 'immature' so the
-    /// MaturityChecker can credit miners via the normal path.
-    private static func reverifyOrphans(rpc: NodeRPC, db: PoolDatabase, logger: Logger) async {
+    /// Re-verify pool DB against the chain in three passes:
+    ///
+    /// 1. **Orphans → immature**: blocks the pool marked orphan that the chain
+    ///    still has. Flip back to immature so MaturityChecker re-credits via
+    ///    the normal path.
+    /// 2. **Phantom matures → orphan**: blocks the pool marked mature/credited
+    ///    that the chain has since reorged away. Mark orphan and reverse the
+    ///    miner credits (block_shares is preserved as audit trail).
+    /// 3. **Phantom payouts → restored**: payout txs in pool DB whose txid no
+    ///    longer exists in the wallet's transaction history (= reorged out).
+    ///    Restore the affected miner balances and delete the payout rows.
+    ///
+    /// Idempotent across restarts. Run before MaturityChecker / PayoutManager
+    /// start so they see a consistent state.
+    private static func reverifyChainState(
+        rpc: NodeRPC, db: PoolDatabase, walletName: String, logger: Logger
+    ) async {
+        // Pass 1: false orphans → immature
         let orphans = db.getOrphanBlocks()
-        guard !orphans.isEmpty else { return }
-
-        logger.info("Re-verifying \(orphans.count) orphan blocks against the chain", source: "Pool")
-
-        var reclaimed = 0
+        var orphanReclaimed = 0
         var realOrphans = 0
-        var errors = 0
-
+        var orphanErrors = 0
         for block in orphans {
             do {
                 let (hash, _) = try await rpc.getBlock(height: block.height)
                 if hash == block.hash {
                     db.markBlockImmature(height: block.height)
-                    reclaimed += 1
+                    orphanReclaimed += 1
                 } else {
                     realOrphans += 1
                 }
             } catch {
-                errors += 1
+                orphanErrors += 1
             }
         }
 
-        logger.info("Orphan re-verification complete", metadata: [
-            "checked": "\(orphans.count)",
-            "reclaimed": "\(reclaimed)",
+        // Pass 2: phantom matures → orphan, reverse credits
+        let matures = db.getMatureBlocks()
+        var phantomMatures = 0
+        var phantomCreditReversed: Int64 = 0
+        var matureErrors = 0
+        for block in matures {
+            do {
+                let (hash, _) = try await rpc.getBlock(height: block.height)
+                if hash != block.hash {
+                    let reversed = db.reverseMatureCredit(height: block.height)
+                    phantomMatures += 1
+                    phantomCreditReversed += reversed
+                }
+            } catch {
+                matureErrors += 1
+            }
+        }
+
+        // Pass 3: phantom payouts → restored
+        var phantomPayouts = 0
+        var phantomPayoutValueRestored: Int64 = 0
+        var payoutPassRan = false
+        do {
+            let walletTxs = try await rpc.listTransactions(walletName: walletName)
+            payoutPassRan = true
+            // Build set of txids the wallet considers canonical (any type — we
+            // include all because a payout could in principle land in any
+            // category, and being permissive here only risks NOT reversing
+            // a real phantom, never wrongly reversing a real one).
+            var walletTxidSet = Set<String>()
+            walletTxidSet.reserveCapacity(walletTxs.count)
+            for tx in walletTxs { walletTxidSet.insert(tx.txid) }
+
+            for txid in db.getDistinctPayoutTxids() {
+                if !walletTxidSet.contains(txid) {
+                    let restored = db.reversePayout(txid: txid)
+                    phantomPayouts += 1
+                    phantomPayoutValueRestored += restored
+                }
+            }
+        } catch {
+            logger.warning("Skipping phantom-payout pass: \(error)", source: "Pool")
+        }
+
+        logger.info("Chain state reverification complete", metadata: [
+            "orphans_reclaimed": "\(orphanReclaimed)",
             "real_orphans": "\(realOrphans)",
-            "errors": "\(errors)",
+            "orphan_errors": "\(orphanErrors)",
+            "phantom_matures": "\(phantomMatures)",
+            "credit_reversed_fbc": "\(String(format: "%.6f", Double(phantomCreditReversed) / 1_000_000.0))",
+            "mature_errors": "\(matureErrors)",
+            "phantom_payouts": "\(phantomPayouts)",
+            "payout_restored_fbc": "\(String(format: "%.6f", Double(phantomPayoutValueRestored) / 1_000_000.0))",
+            "payout_pass": "\(payoutPassRan)",
         ], source: "Pool")
     }
 }

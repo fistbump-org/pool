@@ -75,6 +75,34 @@ public final class NodeRPC: Sendable {
         return (hash, confirmations)
     }
 
+    /// One wallet transaction record (subset of fields we care about).
+    public struct WalletTx: Sendable {
+        public let txid: String
+        public let type: String
+        public let height: Int
+    }
+
+    /// List wallet transactions. The wallet's index reflects the canonical
+    /// chain after rescan, so this is the source of truth for "did this
+    /// payout actually land on chain". Defaults to a generous limit since
+    /// pool wallets accumulate many txs over time.
+    public func listTransactions(walletName: String, count: Int = 100_000) async throws -> [WalletTx] {
+        let result = try await call(method: "listtransactions", params: [count], wallet: walletName)
+        guard let arr = result as? [Any] else {
+            throw PoolError.rpcError("invalid listtransactions response")
+        }
+        var out: [WalletTx] = []
+        out.reserveCapacity(arr.count)
+        for item in arr {
+            guard let dict = item as? [String: Any],
+                  let txid = dict["txid"] as? String,
+                  let type = dict["type"] as? String else { continue }
+            let height = dict["height"] as? Int ?? -1
+            out.append(WalletTx(txid: txid, type: type, height: height))
+        }
+        return out
+    }
+
     /// Get protocol parameters (block time, coinbase maturity, etc.).
     public func getProtocolParams() async throws -> [String: Any] {
         let result = try await call(method: "getprotocolparams", params: [])

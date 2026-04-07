@@ -145,9 +145,113 @@ public final class PoolDatabase: @unchecked Sendable {
         return queryBlocks("SELECT * FROM blocks WHERE status = 'orphan' ORDER BY height")
     }
 
+    public func getMatureBlocks() -> [BlockRecord] {
+        lock.lock(); defer { lock.unlock() }
+        return queryBlocks("SELECT * FROM blocks WHERE status = 'mature' ORDER BY height")
+    }
+
     public func markBlockImmature(height: Int) {
         lock.lock(); defer { lock.unlock() }
         exec("UPDATE blocks SET status = 'immature' WHERE height = \(height)")
+    }
+
+    /// Reverse the credit for a previously-mature block whose chain hash no
+    /// longer matches (deep reorg orphaned it post-maturity). Decrements every
+    /// miner's balance and total_earned by their original share credit, marks
+    /// the block as orphan, and returns the total credit reversed (for logging).
+    /// block_shares is preserved as an audit trail.
+    @discardableResult
+    public func reverseMatureCredit(height: Int) -> Int64 {
+        lock.lock(); defer { lock.unlock() }
+        var shares: [(String, Int64)] = []
+        var stmt: OpaquePointer?
+        let q = "SELECT address, credit FROM block_shares WHERE block_height = ?"
+        if sqlite3_prepare_v2(db, q, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_int64(stmt, 1, Int64(height))
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let addr = String(cString: sqlite3_column_text(stmt, 0))
+                let credit = sqlite3_column_int64(stmt, 1)
+                shares.append((addr, credit))
+            }
+        }
+        sqlite3_finalize(stmt)
+
+        var total: Int64 = 0
+        exec("BEGIN")
+        for (addr, credit) in shares {
+            var u: OpaquePointer?
+            let usql = "UPDATE balances SET balance = balance - ?, total_earned = total_earned - ? WHERE address = ?"
+            if sqlite3_prepare_v2(db, usql, -1, &u, nil) == SQLITE_OK {
+                sqlite3_bind_int64(u, 1, credit)
+                sqlite3_bind_int64(u, 2, credit)
+                sqlite3_bind_text(u, 3, (addr as NSString).utf8String, -1, nil)
+                sqlite3_step(u)
+            }
+            sqlite3_finalize(u)
+            total += credit
+        }
+        exec("UPDATE blocks SET status = 'orphan', credited = 0 WHERE height = \(height)")
+        exec("COMMIT")
+        return total
+    }
+
+    /// Reverse a payout that was rolled back by a chain reorg. For each
+    /// (address, amount) row with the given txid, increments balance and
+    /// decrements total_paid, then deletes the rows. Returns the total
+    /// amount restored.
+    @discardableResult
+    public func reversePayout(txid: String) -> Int64 {
+        lock.lock(); defer { lock.unlock() }
+        var rows: [(String, Int64)] = []
+        var stmt: OpaquePointer?
+        let q = "SELECT address, amount FROM payouts WHERE txid = ?"
+        if sqlite3_prepare_v2(db, q, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, (txid as NSString).utf8String, -1, nil)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let addr = String(cString: sqlite3_column_text(stmt, 0))
+                let amount = sqlite3_column_int64(stmt, 1)
+                rows.append((addr, amount))
+            }
+        }
+        sqlite3_finalize(stmt)
+
+        var total: Int64 = 0
+        exec("BEGIN")
+        for (addr, amount) in rows {
+            var u: OpaquePointer?
+            let usql = "UPDATE balances SET balance = balance + ?, total_paid = total_paid - ? WHERE address = ?"
+            if sqlite3_prepare_v2(db, usql, -1, &u, nil) == SQLITE_OK {
+                sqlite3_bind_int64(u, 1, amount)
+                sqlite3_bind_int64(u, 2, amount)
+                sqlite3_bind_text(u, 3, (addr as NSString).utf8String, -1, nil)
+                sqlite3_step(u)
+            }
+            sqlite3_finalize(u)
+            total += amount
+        }
+        var d: OpaquePointer?
+        if sqlite3_prepare_v2(db, "DELETE FROM payouts WHERE txid = ?", -1, &d, nil) == SQLITE_OK {
+            sqlite3_bind_text(d, 1, (txid as NSString).utf8String, -1, nil)
+            sqlite3_step(d)
+        }
+        sqlite3_finalize(d)
+        exec("COMMIT")
+        return total
+    }
+
+    /// All distinct payout txids (for cross-checking against the wallet's
+    /// canonical tx list).
+    public func getDistinctPayoutTxids() -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        var out: [String] = []
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT DISTINCT txid FROM payouts", -1, &stmt, nil) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                out.append(String(cString: sqlite3_column_text(stmt, 0)))
+            }
+        }
+        sqlite3_finalize(stmt)
+        return out
     }
 
     public func getAllBlocks(limit: Int = 100) -> [BlockRecord] {
