@@ -140,6 +140,16 @@ public final class PoolDatabase: @unchecked Sendable {
         return queryBlocks("SELECT * FROM blocks WHERE status = 'immature' ORDER BY height")
     }
 
+    public func getOrphanBlocks() -> [BlockRecord] {
+        lock.lock(); defer { lock.unlock() }
+        return queryBlocks("SELECT * FROM blocks WHERE status = 'orphan' ORDER BY height")
+    }
+
+    public func markBlockImmature(height: Int) {
+        lock.lock(); defer { lock.unlock() }
+        exec("UPDATE blocks SET status = 'immature' WHERE height = \(height)")
+    }
+
     public func getAllBlocks(limit: Int = 100) -> [BlockRecord] {
         lock.lock(); defer { lock.unlock() }
         return queryBlocks("SELECT * FROM blocks ORDER BY height DESC LIMIT \(limit)")
