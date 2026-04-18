@@ -44,10 +44,16 @@ final class MiningEngine: @unchecked Sendable {
     private var jobGeneration: UInt64 = 0
 
     /// Logical CPU IDs — one representative per physical core — for pinning.
-    /// Empty on non-Linux. Threads pick a CPU by `tid % coreIds.count`.
+    /// Empty on non-Linux or when `pinThreads=false`. Threads pick a CPU by `tid % coreIds.count`.
     private let coreIds: [Int32]
 
-    init(client: StratumClient, network: NetworkType, threads: Int, logger: Logger) {
+    init(
+        client: StratumClient,
+        network: NetworkType,
+        threads: Int,
+        pinThreads: Bool = true,
+        logger: Logger
+    ) {
         self.client = client
         self.params = ConsensusParams.params(for: network)
         // Default to one thread per *physical* core. BalloonHash is memory-bound,
@@ -56,11 +62,18 @@ final class MiningEngine: @unchecked Sendable {
         self.threads = threads > 0 ? threads : physicalCores
         self.logger = logger
         // Enumerate representative CPU IDs (one per physical core) for pinning.
-        var ids = [Int32](repeating: 0, count: physicalCores)
-        let n = ids.withUnsafeMutableBufferPointer { buf in
-            Int(balloon_physical_core_cpu_ids(buf.baseAddress, Int32(physicalCores)))
+        // When pinning is disabled, leave coreIds empty so the kernel schedules freely —
+        // useful on hybrid CPUs (Intel P+E) where the thread director migrates work
+        // to the fastest-available core better than a static pin can.
+        if pinThreads {
+            var ids = [Int32](repeating: 0, count: physicalCores)
+            let n = ids.withUnsafeMutableBufferPointer { buf in
+                Int(balloon_physical_core_cpu_ids(buf.baseAddress, Int32(physicalCores)))
+            }
+            self.coreIds = Array(ids.prefix(n))
+        } else {
+            self.coreIds = []
         }
-        self.coreIds = Array(ids.prefix(n))
         // Cap pooled buffers low — each is 512 MB. Threads allocate on demand if pool is empty.
         // The allocation cost is negligible vs the 10s BalloonHash computation.
         self.bufferPool = BufferPool(slots: ConsensusParams.params(for: network).balloonSlots, maxPooled: 4)

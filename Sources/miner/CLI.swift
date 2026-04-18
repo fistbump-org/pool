@@ -29,6 +29,9 @@ struct MinerCLI: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: "Number of mining threads (default: one per physical core).")
     var threads: Int?
 
+    @Flag(name: .long, help: "Don't pin threads to CPUs — let the kernel schedule. Useful on hybrid CPUs (Intel P+E) where the kernel's thread director migrates work toward P-cores adaptively.")
+    var noPin: Bool = false
+
     @Flag(name: .long, help: "Connect to pool using TLS.")
     var tls: Bool = false
 
@@ -101,6 +104,7 @@ struct MinerCLI: AsyncParsableCommand {
             client: client,
             network: networkType,
             threads: threads ?? 0,
+            pinThreads: !noPin,
             logger: logger
         )
 
