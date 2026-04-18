@@ -593,7 +593,7 @@ int balloon_hash_fast(
     counter++;
 
     for (int i = 1; i < slots; i++) {
-        if ((i & 0xFFFF) == 0 && cancelled && *cancelled) return -1;
+        if ((i & 0xFFF) == 0 && cancelled && *cancelled) return -1;
         store_u64le(inp, counter);
         copy32(buf + (i - 1) * 32, inp + 8);
         blake2b256_single(inp, 40, buf + i * 32);
@@ -630,7 +630,7 @@ int balloon_hash_fast(
 
         for (int round = 0; round < rounds; round++) {
             for (int i = 0; i < slots; i++) {
-                if ((i & 0xFFFF) == 0 && cancelled && *cancelled) return -1;
+                if ((i & 0xFFF) == 0 && cancelled && *cancelled) return -1;
                 int off = i * 32;
 
                 // Mix with previous neighbor (sequential — likely cached).
@@ -675,7 +675,7 @@ int balloon_hash_fast(
 
         for (int round = 0; round < rounds; round++) {
             for (int i = 0; i < slots; i++) {
-                if ((i & 0xFFFF) == 0 && cancelled && *cancelled) return -1;
+                if ((i & 0xFFF) == 0 && cancelled && *cancelled) return -1;
                 int off = i * 32;
 
                 // Step 1: mix with previous neighbor (sequential — likely cached).
@@ -808,7 +808,7 @@ int balloon_hash_simple(
     counter++;
 
     for (int i = 1; i < slots; i++) {
-        if ((i & 0xFFFF) == 0 && cancelled && *cancelled) return -1;
+        if ((i & 0xFFF) == 0 && cancelled && *cancelled) return -1;
         store_u64le(inp, counter);
         copy32(buf + (i - 1) * 32, inp + 8);
         blake2b256_single(inp, 40, buf + i * 32);
@@ -818,7 +818,7 @@ int balloon_hash_simple(
     // Phase 2: Mix — straight translation, no prefetch
     for (int round = 0; round < rounds; round++) {
         for (int i = 0; i < slots; i++) {
-            if ((i & 0xFFFF) == 0 && cancelled && *cancelled) return -1;
+            if ((i & 0xFFF) == 0 && cancelled && *cancelled) return -1;
             int off = i * 32;
 
             store_u64le(inp, counter);

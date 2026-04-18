@@ -416,7 +416,11 @@ final class StratumClient: @unchecked Sendable {
                 completion(true)
             }, .global(qos: .utility)
         )
-        let params = NWParameters(tls: tlsParams, tcp: NWProtocolTCP.Options())
+        // Disable Nagle: share and block submissions are tiny JSON lines
+        // where a ~100 ms coalescing delay costs orphan risk on block finds.
+        let tcpOpts = NWProtocolTCP.Options()
+        tcpOpts.noDelay = true
+        let params = NWParameters(tls: tlsParams, tcp: tcpOpts)
         let conn = NWConnection(
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port(rawValue: UInt16(port))!,
