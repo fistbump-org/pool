@@ -1,4 +1,5 @@
 import Base
+import CBalloon
 import Consensus
 import ExtCrypto
 import Foundation
@@ -42,11 +43,24 @@ final class MiningEngine: @unchecked Sendable {
     /// local copy to know when to switch.
     private var jobGeneration: UInt64 = 0
 
+    /// Logical CPU IDs — one representative per physical core — for pinning.
+    /// Empty on non-Linux. Threads pick a CPU by `tid % coreIds.count`.
+    private let coreIds: [Int32]
+
     init(client: StratumClient, network: NetworkType, threads: Int, logger: Logger) {
         self.client = client
         self.params = ConsensusParams.params(for: network)
-        self.threads = threads > 0 ? threads : max(1, ProcessInfo.processInfo.activeProcessorCount)
+        // Default to one thread per *physical* core. BalloonHash is memory-bound,
+        // so SMT siblings on the same core thrash L1/L2 and slow each other down.
+        let physicalCores = max(1, Int(balloon_physical_core_count()))
+        self.threads = threads > 0 ? threads : physicalCores
         self.logger = logger
+        // Enumerate representative CPU IDs (one per physical core) for pinning.
+        var ids = [Int32](repeating: 0, count: physicalCores)
+        let n = ids.withUnsafeMutableBufferPointer { buf in
+            Int(balloon_physical_core_cpu_ids(buf.baseAddress, Int32(physicalCores)))
+        }
+        self.coreIds = Array(ids.prefix(n))
         // Cap pooled buffers low — each is 512 MB. Threads allocate on demand if pool is empty.
         // The allocation cost is negligible vs the 10s BalloonHash computation.
         self.bufferPool = BufferPool(slots: ConsensusParams.params(for: network).balloonSlots, maxPooled: 4)
@@ -169,11 +183,23 @@ final class MiningEngine: @unchecked Sendable {
             "threads": "\(threadCount)",
         ], source: "Miner")
 
+        let coreIds = self.coreIds
+
         for tid in 0..<threadCount {
             let bufferPool = self.bufferPool
             let proofSemaphore = self.proofSemaphore
+            // Pick this thread's CPU; wraps if threadCount > physical cores.
+            let pinCpu: Int32? = coreIds.isEmpty
+                ? nil : coreIds[tid % coreIds.count]
 
             Thread.detachNewThread { [weak self] in
+                // Pin BEFORE allocating the scratchpad — first-touch lands pages on
+                // the local NUMA node, which is the cheap path to NUMA locality on
+                // multi-socket boxes (no libnuma dependency).
+                if let pinCpu {
+                    _ = balloon_pin_current_thread(pinCpu)
+                }
+
                 let buffer = bufferPool.checkout()
                 self?.lock.lock()
                 self?.activeBuffers.append(buffer)

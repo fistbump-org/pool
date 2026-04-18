@@ -26,7 +26,7 @@ struct MinerCLI: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: "Network: main, testnet, regtest, simnet.")
     var network: String?
 
-    @Option(name: .shortAndLong, help: "Number of mining threads (0 = all cores - 1).")
+    @Option(name: .shortAndLong, help: "Number of mining threads (default: one per physical core).")
     var threads: Int?
 
     @Flag(name: .long, help: "Connect to pool using TLS.")
@@ -48,11 +48,13 @@ struct MinerCLI: AsyncParsableCommand {
         let networkType = NetworkType(rawValue: network ?? "main") ?? .main
         let stratumPort = port ?? Int(networkType.stratumPort)
 
+        let physicalCores = max(1, Int(balloon_physical_core_count()))
         logger.info("Fistbump CPU Miner v\(MinerVersion.id)", metadata: [
             "pool": "\(host):\(stratumPort)",
             "user": "\(user)",
             "network": "\(networkType.rawValue)",
-            "threads": "\(threads ?? (ProcessInfo.processInfo.activeProcessorCount - 1))",
+            "threads": "\(threads ?? physicalCores)",
+            "physical_cores": "\(physicalCores)",
         ], source: "Miner")
 
         // Self-test: verify C fast path matches C simple path
